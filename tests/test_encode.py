@@ -117,6 +117,13 @@ def test_too_many_options_raise_budget_exceeded_naming_the_question(tok):
         build_sequence(tok, "s", q, qid="dept")
 
 
+def test_many_short_options_encode_without_raising(tok):
+    q = {"type": "choice", "instructions": "i", "criteria": {f"o{i}": "" for i in range(52)}}
+    enc = build_sequence(tok, "s", q)
+    assert len(enc.markers) == 52 == enc.n_options
+    assert enc.markers[-1] < 256
+
+
 def test_head_budget_respected_with_many_options(tok):
     q = {"type": "choice", "instructions": "i",
          "criteria": {f"label{i}": "a description that is fairly long" for i in range(20)}}

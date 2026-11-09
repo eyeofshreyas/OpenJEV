@@ -123,23 +123,18 @@ def build_head(tok, q: dict, head_max_len: int = HEAD_MAX_LEN, qid: str = "q") -
     The mask token is stripped from the rendered option and instruction text right
     before it is tokenized — the boundary where text becomes tokens — so no caller
     value shape (a raw string, or a dict/list rendered to JSON) can forge a marker.
-    Each option is truncated at the tokenizer to ``OPTION_MAX_TOKENS``; if the options
-    still overflow ``head_max_len``, each is cut further to an equal share (minimum
-    ``MIN_OPTION_TOKENS``) and the instructions are clamped to whatever room remains,
-    so the markers always survive. Raises ``OptionBudgetExceeded`` if the options
-    cannot fit the head even at that minimum share, and ``OptionCollision`` if two
+    Each option is truncated at the tokenizer to ``OPTION_MAX_TOKENS``. Only if that
+    still overflows ``head_max_len`` is an equal-share cut considered: a question with
+    many options but short text (e.g. 60 terse labels) is encoded as-is, however many
+    options there are. The cut is only rejected, via ``OptionBudgetExceeded``, when the
+    share each option would get falls below ``MIN_OPTION_TOKENS`` — "too much option
+    text", not "too many options", is the real limit. Raises ``OptionCollision`` if two
     options truncate to the same token span.
     """
     option_texts = [strip_mask(tok, text) for text in render_options(q)]
     n = len(option_texts)
 
     fixed = 3 + n  # [CLS] + [SEP] after instructions + [SEP] at the end, one [MASK] per option
-    if fixed + n * MIN_OPTION_TOKENS > head_max_len:
-        raise OptionBudgetExceeded(
-            f"question {qid!r}: {n} options cannot fit head_max_len={head_max_len} "
-            f"even at {MIN_OPTION_TOKENS} tokens each"
-        )
-
     option_ids = [
         tok(text, add_special_tokens=False, truncation=True, max_length=OPTION_MAX_TOKENS)["input_ids"]
         for text in option_texts
@@ -147,7 +142,12 @@ def build_head(tok, q: dict, head_max_len: int = HEAD_MAX_LEN, qid: str = "q") -
 
     total_option_tokens = sum(len(ids) for ids in option_ids)
     if fixed + total_option_tokens > head_max_len:
-        share = max(MIN_OPTION_TOKENS, (head_max_len - fixed) // n)
+        share = (head_max_len - fixed) // n
+        if share < MIN_OPTION_TOKENS:
+            raise OptionBudgetExceeded(
+                f"question {qid!r}: {n} options cannot fit head_max_len={head_max_len} "
+                f"even at {MIN_OPTION_TOKENS} tokens each"
+            )
         option_ids = [ids[:share] for ids in option_ids]
         total_option_tokens = sum(len(ids) for ids in option_ids)
 
