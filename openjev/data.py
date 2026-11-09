@@ -253,6 +253,106 @@ def items_from_csv(
     return items, question, skipped
 
 
+def _hf_parquet_split(repo_id: str, config: str, split: str):
+    """Load one split's auto-converted parquet shard, without preparing its siblings.
+
+    ``datasets.load_dataset(repo_id, config, split=...)`` still downloads and
+    builds every split of the config on first use. Pointing the ``parquet``
+    builder directly at the Hub's ``refs/convert/parquet`` mirror for just the
+    requested split avoids paying for the splits nobody asked for.
+    """
+    from datasets import load_dataset
+
+    path = f"hf://datasets/{repo_id}@refs%2Fconvert%2Fparquet/{config}/{split}/0000.parquet"
+    return load_dataset("parquet", data_files=path, split="train")
+
+
+def sample_options(labels: list[str], gold: str, n: int, rng: random.Random) -> list[str]:
+    """Gold plus up to ``n - 1`` distractors drawn without replacement, then shuffled.
+
+    Shuffling means an option's position never carries information about
+    whether it is correct. If fewer than ``n`` labels exist, every label is
+    returned.
+    """
+    pool = [label for label in labels if label != gold]
+    options = [gold] + rng.sample(pool, min(n - 1, len(pool)))
+    rng.shuffle(options)
+    return options
+
+
+def load_typed_decisions(split: str) -> list[dict]:
+    """Load LocalLLaMA/typed-decisions: hand-labelled cases with gold belief distributions.
+
+    This is the project's only source of probability-distribution targets —
+    everything else loaded here is a hard label and gets smoothed instead.
+    """
+    ds = _hf_parquet_split("LocalLLaMA/typed-decisions", "all", split)
+    return [
+        {
+            "state": json.loads(row["state"]),
+            "questions": json.loads(row["questions"]),
+            "gold": json.loads(row["gold"]),
+        }
+        for row in ds
+    ]
+
+
+def load_massive(split: str, n_options: int = 20, seed: int = 0) -> list[dict]:
+    """Load MASSIVE (en-US) at the reference implementation's 20-option protocol.
+
+    MASSIVE's full intent set is 60 labels: more than the published
+    protocol uses, and more than the encoder's 256-token head budget can
+    fit. Each case keeps the gold intent plus ``n_options - 1`` sampled
+    distractors, shuffled so position carries no information about
+    correctness, seeded by ``seed``.
+    """
+    ds = _hf_parquet_split("AmazonScience/massive", "en-US", split)
+    intents = ds.features["intent"].names
+    rng = random.Random(seed)
+    qid = "intent"
+    cases = []
+    for row in ds:
+        gold_label = intents[row["intent"]]
+        options = sample_options(intents, gold_label, n_options, rng)
+        question = {
+            "type": "choice",
+            "instructions": "Which intent best matches the utterance?",
+            "criteria": {label: "" for label in options},
+        }
+        cases.append({"state": row["utt"], "questions": {qid: question}, "expected": {qid: gold_label}})
+    return cases
+
+
+def load_boolq(split: str) -> list[dict]:
+    """Load BoolQ as a yes/no (``noul``) question over a passage and a question."""
+    ds = _hf_parquet_split("google/boolq", "default", split)
+    qid = "answer"
+    question = {"type": "noul", "instructions": "Does the passage support a yes answer to the question?"}
+    cases = []
+    for row in ds:
+        state = f"{row['passage']}\n\nQuestion: {row['question']}"
+        gold_label = "true" if row["answer"] else "false"
+        cases.append({"state": state, "questions": {qid: question}, "expected": {qid: gold_label}})
+    return cases
+
+
+def load_ag_news(split: str) -> list[dict]:
+    """Load AG News as a 4-way topic-choice question."""
+    ds = _hf_parquet_split("fancyzhx/ag_news", "default", split)
+    names = ds.features["label"].names
+    qid = "topic"
+    question = {
+        "type": "choice",
+        "instructions": "Which topic does this news text belong to?",
+        "criteria": {name: "" for name in names},
+    }
+    cases = []
+    for row in ds:
+        gold_label = names[row["label"]]
+        cases.append({"state": row["text"], "questions": {qid: question}, "expected": {qid: gold_label}})
+    return cases
+
+
 def update_budget(n_items: int, micro_batch: int, grad_accum: int, epochs: int) -> int:
     """Total optimizer updates over training: ``epochs`` times the per-epoch update count.
 
