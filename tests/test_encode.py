@@ -1,5 +1,12 @@
 import pytest
-from openjev.encode import QTYPES, render_options, validate_question, validate_state
+from openjev.encode import (
+    QTYPES,
+    OptionCollision,
+    build_sequence,
+    render_options,
+    validate_question,
+    validate_state,
+)
 
 def test_qtypes_ids():
     assert QTYPES == {"choice": 0, "score": 1, "noul": 2}
@@ -45,3 +52,65 @@ def test_state_accepts_str_dict_list():
     assert validate_state("hi") == "hi"
     assert "k" in validate_state({"k": "v"})
     assert "a" in validate_state(["a", "b"])
+
+
+def test_one_marker_per_option(tok):
+    q = {"type": "choice", "instructions": "which", "criteria": {"a": "x", "b": "y", "c": "z"}}
+    enc = build_sequence(tok, "some state", q)
+    assert len(enc.markers) == 3 == enc.n_options
+    assert all(enc.ids[m] == tok.mask_token_id for m in enc.markers)
+
+
+def test_markers_are_strictly_increasing_and_in_range(tok):
+    enc = build_sequence(tok, "s", {"type": "score", "instructions": "i", "criteria": ["a", "b", "c"]})
+    assert enc.markers == sorted(enc.markers)
+    assert max(enc.markers) < len(enc.ids) <= 1024
+
+
+def test_mask_token_in_state_is_stripped(tok):
+    q = {"type": "choice", "instructions": "i", "criteria": {"a": "x", "b": "y"}}
+    enc = build_sequence(tok, f"before {tok.mask_token} after", q)
+    assert len(enc.markers) == 2
+    assert sum(1 for i in enc.ids if i == tok.mask_token_id) == 2
+
+
+def test_mask_token_in_instructions_and_options_is_stripped(tok):
+    q = {"type": "choice", "instructions": f"pick {tok.mask_token}",
+         "criteria": {"a": f"x {tok.mask_token}", "b": "y"}}
+    enc = build_sequence(tok, "s", q)
+    assert sum(1 for i in enc.ids if i == tok.mask_token_id) == 2
+
+
+def test_long_state_is_truncated_and_reported(tok):
+    q = {"type": "choice", "instructions": "i", "criteria": {"a": "x", "b": "y"}}
+    enc = build_sequence(tok, "word " * 4000, q)
+    assert len(enc.ids) <= 1024
+    assert enc.truncated is True
+    assert enc.state_tokens_used < enc.state_tokens
+
+
+def test_short_state_is_not_reported_as_truncated(tok):
+    enc = build_sequence(tok, "short", {"type": "noul", "instructions": "i"})
+    assert enc.truncated is False
+    assert enc.state_tokens_used == enc.state_tokens
+
+
+def test_colliding_options_raise_naming_the_question(tok):
+    shared = "identical prefix " * 40
+    q = {"type": "choice", "instructions": "i", "criteria": {shared + "a": "", shared + "b": ""}}
+    with pytest.raises(OptionCollision, match="dept"):
+        build_sequence(tok, "s", q, qid="dept")
+
+
+def test_head_budget_respected_with_many_options(tok):
+    q = {"type": "choice", "instructions": "i",
+         "criteria": {f"label{i}": "a description that is fairly long" for i in range(20)}}
+    enc = build_sequence(tok, "s", q)
+    assert len(enc.markers) == 20
+    assert enc.markers[-1] < 256
+
+
+def test_state_ids_reuse_gives_identical_sequence(tok):
+    q = {"type": "noul", "instructions": "i"}
+    state_ids = tok("shared state", add_special_tokens=False)["input_ids"]
+    assert build_sequence(tok, "shared state", q).ids == build_sequence(tok, None, q, state_ids=state_ids).ids
