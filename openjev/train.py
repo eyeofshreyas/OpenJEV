@@ -16,18 +16,28 @@ A single dead seed is not evidence of a bug; multi-seed runs are how that call
 gets made, which is why ``TrainConfig.seed`` is a knob and the report states it.
 """
 
+import json
+import math
 import random
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_model, save_model
-from transformers import get_cosine_schedule_with_warmup
+from safetensors.torch import load_file, load_model, save_file, save_model
+from transformers import AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup
 
 from openjev.data import Item, _gold_keys, split_items, update_budget
-from openjev.encode import HEAD_MAX_LEN, MAX_LEN, build_sequence, collate, strip_mask
+from openjev.encode import HEAD_MAX_LEN, MAX_LEN, QTYPES, build_sequence, collate, strip_mask
+from openjev.model import DecisionModel
 from openjev.score import decision_loss
+
+# A type with fewer calibration items than this keeps temperature 1.0 rather
+# than fit one to noise — honesty about a fit nobody should trust.
+MIN_CALIBRATION_ITEMS = 10
+
+# The range a fitted temperature is searched and clamped to.
+_TEMP_LO, _TEMP_HI = 0.25, 10.0
 
 
 class NonFiniteLoss(RuntimeError):
@@ -155,6 +165,97 @@ def accuracy(model, tok, items: list[Item], cfg: TrainConfig, device) -> float:
     return correct / len(items)
 
 
+def _type_nll(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, t) -> torch.Tensor:
+    """Mean negative log-likelihood of ``target`` under ``logits`` scaled by ``t``."""
+    scaled = (logits / t).masked_fill(~mask, float("-inf"))
+    return -(target * torch.log_softmax(scaled, dim=-1)).sum(-1).mean()
+
+
+def _fit_one_temperature(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> float:
+    """Minimise NLL over ``T`` with a log-spaced grid, refined by LBFGS on ``log T``."""
+    grid = torch.logspace(math.log10(_TEMP_LO), math.log10(_TEMP_HI), 25)
+    grid_nll = torch.tensor([_type_nll(logits, target, mask, float(t)) for t in grid])
+    best_t = float(grid[grid_nll.argmin()])
+
+    log_t = torch.tensor(math.log(best_t), requires_grad=True)
+    optimizer = torch.optim.LBFGS([log_t], lr=0.5, max_iter=50, line_search_fn="strong_wolfe")
+
+    def closure():
+        optimizer.zero_grad()
+        t = log_t.exp().clamp(_TEMP_LO, _TEMP_HI)
+        loss = _type_nll(logits, target, mask, t)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    return float(log_t.detach().exp().clamp(_TEMP_LO, _TEMP_HI))
+
+
+def fit_temperatures(model, items: list[Item], tok, cfg: TrainConfig) -> tuple[list[float], dict]:
+    """Fit one softmax temperature per question type, on that type's own items only.
+
+    Dividing every logit by the same positive scalar can never change which
+    one is largest, so this can only reshape a question's probabilities —
+    never its accuracy. Each type is minimised separately (grid search over
+    ``[0.25, 10]``, refined by ``LBFGS`` on ``log T``) because ``choice``,
+    ``score`` and ``noul`` are miscalibrated differently. A type with fewer
+    than ``MIN_CALIBRATION_ITEMS`` items keeps temperature 1.0 and is marked
+    ``fitted: False`` rather than fit to noise.
+
+    Writes the fitted values into ``model.temperature`` so they travel with
+    whatever checkpoint gets saved next, and returns them again as a plain
+    list (in ``QTYPES`` order) alongside a per-type note.
+    """
+    device = next(model.parameters()).device
+    was_training = model.training
+    model.eval()
+
+    by_type: dict[str, list[Item]] = {name: [] for name in QTYPES}
+    for item in items:
+        by_type[item.question["type"]].append(item)
+
+    temps = model.temperature.detach().clone().cpu()
+    notes: dict[str, dict] = {}
+    state_ids: dict[str, list[int]] = {}
+
+    try:
+        for name, type_items in by_type.items():
+            idx = QTYPES[name]
+            if len(type_items) < MIN_CALIBRATION_ITEMS:
+                temps[idx] = 1.0
+                notes[name] = {
+                    "fitted": False,
+                    "n_items": len(type_items),
+                    "warning": f"only {len(type_items)} {name!r} items, need at least {MIN_CALIBRATION_ITEMS}",
+                }
+                continue
+
+            batch, target = _batch(tok, type_items, cfg, None, state_ids)
+            batch = {k: v.to(device) for k, v in batch.items()}
+            with torch.no_grad():
+                logits = model(**batch).cpu()
+            target = target.cpu()
+            mask = batch["marker_mask"].cpu()
+
+            nll_before = float(_type_nll(logits, target, mask, 1.0))
+            fitted_t = _fit_one_temperature(logits, target, mask)
+            nll_after = float(_type_nll(logits, target, mask, fitted_t))
+
+            temps[idx] = fitted_t
+            notes[name] = {
+                "fitted": True,
+                "n_items": len(type_items),
+                "temperature": fitted_t,
+                "nll_before": nll_before,
+                "nll_after": nll_after,
+            }
+    finally:
+        model.train(was_training)
+
+    model.temperature.copy_(temps.to(model.temperature.device))
+    return temps.tolist(), notes
+
+
 def train(
     items: list[Item], model, tok, out_dir, cfg: TrainConfig | None = None, skipped=None, resume: bool = False
 ) -> dict:
@@ -203,7 +304,7 @@ def train(
 
     updates, epoch_loss, start_epoch = 0, [], 0
     if resume:
-        state = load_checkpoint(model, out_dir, optimizer, scheduler, scaler)
+        state = load_checkpoint(model, out_dir, optimizer=optimizer, scheduler=scheduler, scaler=scaler)
         start_epoch = state.get("epoch", 0)
         updates = state.get("updates", 0)
         epoch_loss = list(state.get("epoch_loss", []))
@@ -295,42 +396,108 @@ def train(
     }
 
 
-def save_checkpoint(model, out_dir, state: dict | None = None, name: str = "checkpoint_latest") -> Path:
-    """Write the weights, and the state a run needs to resume, to ``out_dir/name/``.
+def save_checkpoint(model, *args, state: dict | None = None, name: str = "checkpoint_latest",
+                     questions: dict | None = None, config: dict | None = None):
+    """Write a checkpoint. Two call shapes share this one pair of functions.
 
-    Called after every epoch, so a crash or a Kaggle timeout costs one epoch
-    rather than the run. Weights alone would not buy that: a run restarted from
-    them begins the cosine schedule again at warmup with cold Adam moments,
-    which is a new run from a warm start, not a resume. So the optimizer,
-    scheduler and scaler state and the epoch index go in beside the weights —
-    the loop that owns them is the loop that writes them.
+    ``save_checkpoint(model, out_dir, state=...)`` is the *resume* shape this
+    loop calls after every epoch: the full weights go to
+    ``out_dir/name/model.safetensors``, and ``state`` (optimizer, scheduler,
+    scaler, epoch index) goes beside them in ``trainer_state.pt``. A crash or
+    a Kaggle timeout then costs one epoch rather than the run — weights alone
+    would restart the cosine schedule at warmup with cold Adam moments, which
+    is a new run from a warm start, not a resume.
 
-    This is resume state, not the publishable inference checkpoint.
+    ``save_checkpoint(model, tok, out_dir, questions=..., config=...)`` is the
+    *publishable* shape: the encoder goes to ``out_dir/encoder`` via
+    ``save_pretrained``, the tokenizer to ``out_dir/tokenizer``, everything
+    else (head, scorer, type embedding, the ``temperature`` buffer) to
+    ``out_dir/model.safetensors``, and a reference-implementation-compatible
+    ``rl_agent_config.json`` (backbone id, ``max_len``, ``head_max_len``,
+    ``head_layers``, temperatures, and whatever notes ``config`` adds) beside
+    it. ``questions``, if given, is written to ``questions.json``. This shape
+    also accepts ``state``, so the same out_dir can carry both a rolling
+    ``checkpoint_latest`` child (resume shape) and this publishable parent.
+
+    Returns ``None`` for the publishable shape, the checkpoint directory
+    (``out_dir/name``) for the resume shape.
     """
-    path = Path(out_dir) / name
+    if len(args) == 1:
+        out_dir = args[0]
+        path = Path(out_dir) / name
+        path.mkdir(parents=True, exist_ok=True)
+        save_model(model, str(path / "model.safetensors"))
+        if state is not None:
+            torch.save(state, path / "trainer_state.pt")
+        return path
+
+    tok, out_dir = args
+    path = Path(out_dir)
     path.mkdir(parents=True, exist_ok=True)
-    save_model(model, str(path / "model.safetensors"))
+
+    model.encoder.save_pretrained(path / "encoder")
+    tok.save_pretrained(path / "tokenizer")
+
+    head_state = {k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()
+                  if not k.startswith("encoder.")}
+    save_file(head_state, str(path / "model.safetensors"))
+
+    rl_agent_config = {
+        "backbone": getattr(model.encoder.config, "name_or_path", "") or None,
+        "max_len": MAX_LEN,
+        "head_max_len": HEAD_MAX_LEN,
+        "head_layers": len(model.head.layers),
+        "temperature": model.temperature.tolist(),
+        **(config or {}),
+    }
+    (path / "rl_agent_config.json").write_text(json.dumps(rl_agent_config, indent=2))
+
+    if questions is not None:
+        (path / "questions.json").write_text(json.dumps(questions, indent=2))
+
     if state is not None:
         torch.save(state, path / "trainer_state.pt")
-    return path
+    return None
 
 
-def load_checkpoint(model, out_dir, optimizer=None, scheduler=None, scaler=None, name="checkpoint_latest") -> dict:
-    """Restore a checkpoint written by ``save_checkpoint`` and return its state.
+def load_checkpoint(*args, optimizer=None, scheduler=None, scaler=None, name="checkpoint_latest"):
+    """Load a checkpoint written by ``save_checkpoint``. Two call shapes share this pair.
 
-    The weights always load. The optimizer, scheduler and scaler load when they
-    are passed, which is what turns a warm start into a resume. Returns the
-    saved state (``{}`` for a weights-only checkpoint), so the caller can pick
-    up the epoch index and the update count.
+    ``load_checkpoint(model, out_dir, optimizer=..., scheduler=..., scaler=...)``
+    is the *resume* shape: it loads weights into the given ``model`` in place
+    from ``out_dir/name/model.safetensors``, restores the optimizer/scheduler
+    /scaler when they are passed, and returns the saved state dict (``{}``
+    for a weights-only checkpoint).
+
+    ``load_checkpoint(path)`` is the *publishable* shape: it rebuilds a fresh
+    ``DecisionModel`` from ``path/encoder`` and ``path/model.safetensors``,
+    the tokenizer from ``path/tokenizer``, and returns
+    ``(model, tokenizer, rl_agent_config)``.
     """
-    path = Path(out_dir) / name
-    load_model(model, str(path / "model.safetensors"))
+    if isinstance(args[0], torch.nn.Module):
+        model, out_dir = args
+        path = Path(out_dir) / name
+        load_model(model, str(path / "model.safetensors"))
 
-    state_path = path / "trainer_state.pt"
-    if not state_path.exists():
-        return {}
-    state = torch.load(state_path, weights_only=True)
-    for key, obj in (("optimizer", optimizer), ("scheduler", scheduler), ("scaler", scaler)):
-        if obj is not None:
-            obj.load_state_dict(state[key])
-    return state
+        state_path = path / "trainer_state.pt"
+        if not state_path.exists():
+            return {}
+        state = torch.load(state_path, weights_only=True)
+        for key, obj in (("optimizer", optimizer), ("scheduler", scheduler), ("scaler", scaler)):
+            if obj is not None:
+                obj.load_state_dict(state[key])
+        return state
+
+    path = Path(args[0])
+    rl_agent_config = json.loads((path / "rl_agent_config.json").read_text())
+
+    encoder = AutoModel.from_pretrained(str(path / "encoder"))
+    model = DecisionModel(encoder, head_layers=rl_agent_config.get("head_layers", 2))
+
+    head_state = load_file(str(path / "model.safetensors"))
+    missing, unexpected = model.load_state_dict(head_state, strict=False)
+    assert not unexpected, f"unexpected keys in model.safetensors: {unexpected}"
+    model.eval()  # a published checkpoint is for inference; dropout stays off until asked otherwise
+
+    tok = AutoTokenizer.from_pretrained(str(path / "tokenizer"))
+    return model, tok, rl_agent_config
