@@ -59,7 +59,7 @@ with a base-size model is a good result. Quoting 0.766 as our target would be di
 
 Deliberately out of v1. Each is a later decision, not a gap:
 
-- HTTP server, MCP server, LangChain/LlamaIndex integrations, CLI beyond the training entry point.
+- MCP server, LangChain/LlamaIndex integrations, CLI beyond the training entry point.
 - ONNX export, quantisation, TileLang kernels, any non-PyTorch runtime.
 - Multilingual. v1 is English; mmBERT is a backbone swap once the loop works.
 - A router across checkpoints.
@@ -78,7 +78,8 @@ Things that would make this a failure even if it technically runs:
   Every number we quote comes from a test slice that neither training nor calibration touched,
   and we say which slice.
 - **21,000 lines.** Laya's core package is that big. We are building the part that decides, and
-  we expect to read our own code a year from now.
+  we expect to read our own code a year from now. `web/` is a second project inside this one and
+  is held to a playground's scope deliberately: no accounts, no database, no server-side state.
 - **A dependency on a paid API** to produce labels.
 
 ## Architecture
@@ -289,13 +290,17 @@ openjev/
   data.py       CSV and JSONL -> training items; typed-decisions and the public loaders; dry run
   train.py      train loop, temperature fitting, checkpoint save/load, seeds, positive control
   eval.py       accuracy, ECE, Brier, latency, baselines
+  serve.py      FastAPI: POST /v1/decide, GET /health, and the built frontend in production
   __init__.py   Agent.predict(state, questions) -> answers with probabilities
+web/            React + TypeScript playground (Vite)
 1_vanilla_decoding.py   unchanged: why generated JSON is not a decision
 2_one_pass.py           the same questions through our model, with the numbers side by side
 ```
 
 Dependencies: `torch`, `transformers` (already present), plus `datasets` for the public sets and
-`safetensors` for checkpoints. Nothing else without a reason.
+`safetensors` for checkpoints. `fastapi` and `uvicorn` behind a `[serve]` extra, so training and
+evaluation never import them. The frontend's dependencies live in `web/package.json` and are not
+Python's problem. Nothing else without a reason.
 
 Checkpoint layout: `model.safetensors`, `encoder/`, `tokenizer/`, **`rl_agent_config.json`**,
 `questions.json`, `checkpoint_latest/`. Laya's layout and laya's config filename, because
@@ -306,6 +311,55 @@ filename.
 simplification of Apache-2.0 code and reuses its sequence format, checkpoint layout and data
 format. Any published weights carry a model card naming the training sets, their licences, and
 the fact that the typed-decisions targets are teacher-generated.
+
+
+## The frontend
+
+A playground, like Jev's: paste a state, define typed questions, see the distributions. It is how
+anyone forms an opinion about a decision model, including us — a probability table in a terminal
+does not show you that the model is confidently wrong about one option.
+
+**Stack: React + TypeScript on Vite, Tailwind, talking to FastAPI.** Chosen by the user. Vite
+rather than Next because this is a single-page tool with no routing, no SSR and no SEO; Next would
+add a server tier we would not use. No component library — the UI is a two-pane form and a
+results panel, and a design system costs more than it saves at that size.
+
+**The API.** One endpoint, which is also the API any other code calls:
+
+```
+POST /v1/decide   {"state": "...", "questions": {...}}  ->  the same object Agent.predict returns
+GET  /health      model id, device, whether a checkpoint is loaded
+```
+
+The response carries per-question probabilities, the chosen answer, and `usage` with forward
+passes, milliseconds and truncation. The endpoint returns exactly what `Agent.predict` returns,
+so the page and the library can never disagree about what an answer looks like. The model is
+loaded once at startup and the route holds no state.
+
+**The page.** Two panes. Left: the state as a textarea, and a question builder — add a question,
+pick `choice`/`score`/`noul`, fill in the options and their descriptions. Right: per question, the
+answer and a horizontal bar per option with its probability, the expected level for `score`,
+P(true) for `noul`, and underneath, the honest numbers — one forward pass, latency, zero output
+tokens, and a truncation warning when the state lost tokens. A `curl` button copies the
+equivalent request.
+
+Two details that matter more than they look:
+
+- **Show the whole distribution, always.** The top probability alone is what makes people trust a
+  model that should not be trusted. Seeing 0.42 / 0.39 / 0.19 is the product.
+- **Surface truncation.** If the state lost tokens to the head budget, the page says so. Silently
+  deciding on half the evidence is the failure mode most likely to reach production.
+
+Run history is `localStorage`, per browser. No accounts, no database, no server-side state — the
+non-goals hold. In development Vite proxies `/v1` to uvicorn; in production FastAPI serves
+`web/dist` and there is one process to deploy.
+
+**It does not wait for the model.** `common.py`'s trie scorer already answers typed questions
+today, so the playground can be built and used against that baseline from the start, with our
+checkpoint swapped in behind the same call later. That also makes the comparison in success #2
+something you can see rather than read: the same question, both engines, side by side.
+
+Visual design gets its own pass when the page is built rather than being specified here.
 
 ## Milestones
 
@@ -327,6 +381,10 @@ Each one ends with a runnable check; the next does not start until it passes.
    numbers come from here. The bar is laya's 0.646 specialist row, not their 0.766.
 6. **The API and the demo.** `Agent.predict`, save/load, and `2_one_pass.py` next to
    `1_vanilla_decoding.py`.
+7. **The playground.** `POST /v1/decide` over the trie-scorer baseline first, then the React page
+   against it, then our checkpoint swapped in behind the same endpoint. Checks: the endpoint
+   returns what `Agent.predict` returns for the same input, and a truncated state shows a warning
+   in the page.
 
 ## Left to the builder
 
@@ -336,3 +394,5 @@ Each one ends with a runnable check; the next does not start until it passes.
 - The distractor sampling rule for MASSIVE's 20-option protocol, beyond "seeded".
 - Learning-rate specifics beyond the starting point above, and the seed count per milestone.
 - Whether milestone 5's local base-size run is worth the hours before moving to Kaggle.
+- The playground's visual design, and whether the question builder edits a form or raw JSON
+  (a form is friendlier; raw JSON is honest about the API and far less code).
