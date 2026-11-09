@@ -9,11 +9,12 @@ carries per-option descriptions (``common.py``'s ``parallel_prompt``), and the
 questions we hand ``Agent.predict`` below carry the exact same text, so neither
 engine is answering with less information than the other.
 
-Both engines are untrained here (``TINY=1`` builds a randomly initialised tiny
-config for each, same convention as part 1 - no 0.6B download, no checkpoint to
-load). Their distributions will be close to uniform; that's the smoke test
-working, not a result. What this script proves is the plumbing and the pass
-counts, side by side.
+Under ``TINY=1`` (part 1's convention: a randomly initialised tiny config, no
+0.6B download) both engines are untrained, and the output says so - a demo that
+prints a uniform distribution for an obviously fraudulent case without saying
+why would be exactly the kind of unearned-looking number this project argues
+against. Point ``OPENJEV_CHECKPOINT`` at a trained checkpoint to get the real
+comparison instead; the caveat below adjusts itself to whichever is true.
 """
 import os
 import pathlib
@@ -42,8 +43,8 @@ def to_questions(schema):
     return questions
 
 
-def build_agent():
-    if os.environ.get("TINY"):
+def build_agent(tiny, checkpoint_path):
+    if tiny:
         # Same smoke path as common.load(): a randomly initialised tiny config, no download.
         tok = AutoTokenizer.from_pretrained(DEFAULT_BACKBONE)
         torch.manual_seed(0)
@@ -51,7 +52,38 @@ def build_agent():
         agent = openjev.Agent.__new__(openjev.Agent)
         agent.tok, agent.model, agent.device = tok, model, torch.device("cpu")
         return agent
-    return openjev.Agent()  # fresh ModernBERT-base backbone; swap for openjev.load(path) once a checkpoint exists
+    if checkpoint_path:
+        return openjev.load(checkpoint_path)
+    return openjev.Agent()  # fresh ModernBERT-base backbone, decision head still untrained
+
+
+def print_caveat(tiny, checkpoint_path):
+    """Say, out loud and unmissably, what the probabilities above do and don't mean.
+
+    A reader runs this script; they don't read the task report. Printing a
+    uniform distribution for an obviously fraudulent case with no caveat reads
+    as "the model has no opinion" - the project's own anti-goal, pointed at
+    itself. So this is conditional on what's actually running, not a canned
+    disclaimer that would go stale (and start lying) the day a real checkpoint
+    shows up.
+    """
+    print("\n--- what these numbers do (and don't) mean ---")
+    if tiny:
+        print("  Both engines are running untrained weights under TINY=1; no checkpoint exists")
+        print("  yet (that is milestone 5). The probabilities above demonstrate the mechanism")
+        print("  and the forward-pass counts, and say nothing about accuracy.")
+        print("  openjev's output is *exactly* uniform (0.500, 0.333) rather than merely close,")
+        print("  because every option marker is the same [MASK] token and an untrained model's")
+        print("  per-marker hidden states differ by only ~1.4e-6. That exactness is evidence the")
+        print("  read-out mechanism works as designed, not evidence that it fails.")
+    elif checkpoint_path is None:
+        print("  The baseline is running real pretrained Qwen3-0.6B weights, zero-shot and not")
+        print("  fine-tuned on this task. openjev has no checkpoint (OPENJEV_CHECKPOINT is")
+        print("  unset), so its decision head is untrained. Neither distribution reflects task")
+        print("  accuracy yet - this still only demonstrates the mechanism and the pass counts.")
+    else:
+        print("  openjev is running the trained checkpoint at OPENJEV_CHECKPOINT; the baseline")
+        print("  is the zero-shot prompted Qwen3-0.6B from the spec. This is the real comparison.")
 
 
 print("CONTEXT:", common.CONTEXT)
@@ -68,13 +100,17 @@ for name, answer in baseline.answers.items():
 print(f"  forward_passes={baseline.forward_passes}  nodes={baseline.nodes}  ms={baseline_ms:.0f}")
 
 print("\n--- engine 2: openjev.Agent, one forward pass ---")
-agent = build_agent()
+tiny = bool(os.environ.get("TINY"))
+checkpoint_path = os.environ.get("OPENJEV_CHECKPOINT")
+agent = build_agent(tiny, checkpoint_path)
 out = agent.predict(common.CONTEXT, to_questions(common.SCHEMA))
 for qid, answer in out["answers"].items():
     rendered = "  ".join(f"{label}={p:.3f}" for label, p in answer["probabilities"].items())
     print(f"  {qid:<9} {rendered}")
 usage = out["usage"]
 print(f"  forward_passes={usage['forward_passes']}  ms={usage['ms']:.0f}")
+
+print_caveat(tiny, checkpoint_path)
 
 print("\n--- the claim, watched rather than read ---")
 print(f"  baseline : forward_passes={baseline.forward_passes}  latency_ms={baseline_ms:.0f}")
