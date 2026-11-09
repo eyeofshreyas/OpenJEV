@@ -5,6 +5,7 @@ import torch
 import pytest
 from transformers import AutoTokenizer
 
+import openjev
 from openjev.data import Item, target_vector
 from openjev.model import build_model, probabilities, tiny_config
 from openjev.train import TrainConfig, _batch
@@ -23,6 +24,20 @@ def tok():
 def tiny_model(tok):
     torch.manual_seed(0)  # deterministic weights: a test whose outcome depends on OS-entropy is worse than none
     return build_model(config=tiny_config(vocab_size=len(tok))).eval()
+
+
+@pytest.fixture
+def tiny_agent(tok, tiny_model):
+    """An ``Agent`` wrapping the real tokenizer and a tiny model, so tests never download weights.
+
+    Bypasses ``Agent.__init__`` (which only knows how to build a fresh backbone or
+    load a saved checkpoint from disk) and wires the already-built fixtures in directly.
+    """
+    agent = openjev.Agent.__new__(openjev.Agent)
+    agent.tok = tok
+    agent.model = tiny_model
+    agent.device = torch.device("cpu")
+    return agent
 
 
 _SYNTHETIC = {"type": "noul", "instructions": "does the report say the statement holds?"}
