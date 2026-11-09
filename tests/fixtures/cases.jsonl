@@ -1,0 +1,4 @@
+{"state": "Customer says the app won't start and also wants a refund.", "questions": [{"qid": "department", "question": {"type": "choice", "instructions": "pick the right team", "criteria": {"billing": "", "technical": ""}}, "expected": "technical"}, {"qid": "urgent", "question": {"type": "noul", "instructions": "is this urgent?"}, "expected": true}]}
+{"state": "The feature request queue is piling up again.", "questions": [{"qid": "team", "question": {"type": "choice", "instructions": "which team owns this?", "criteria": {"platform": "", "growth": ""}}, "gold": {"probabilities": {"platform": 0.7, "growth": 0.3}}}]}
+{"state": "", "questions": [{"qid": "department", "question": {"type": "choice", "instructions": "pick the right team", "criteria": {"billing": "", "technical": ""}}, "expected": "billing"}]}
+{"state": "Some unrelated ticket text.", "questions": [{"qid": "mystery", "question": {"type": "mystery", "instructions": "what is this?"}, "expected": "a"}]}
