@@ -177,8 +177,20 @@ def items_from_jsonl(path, smoothing: float = SMOOTHING) -> tuple[list[Item], Co
                 skipped["invalid_question"] += 1
                 continue
 
+            if not isinstance(case, dict):
+                skipped["invalid_question"] += 1
+                continue
+
             state = case.get("state")
-            for entry in case.get("questions", []):
+            questions = case.get("questions", [])
+            if not isinstance(questions, list):
+                skipped["invalid_question"] += 1
+                continue
+
+            for entry in questions:
+                if not isinstance(entry, dict):
+                    skipped["invalid_question"] += 1
+                    continue
                 item = _build_item(
                     state,
                     entry.get("qid"),

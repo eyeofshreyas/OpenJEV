@@ -40,3 +40,27 @@ def test_split_is_deterministic_and_disjoint():
     assert [i.qid for i in a1] == [i.qid for i in a2] and [i.qid for i in c1] == [i.qid for i in c2]
     assert not ({id(i) for i in a1} & {id(i) for i in c1})
     assert len(a1) + len(c1) == len(items)
+
+
+def test_jsonl_non_dict_case_is_skipped_not_raised(tmp_path):
+    p = tmp_path / "bad.jsonl"
+    p.write_text("[1, 2, 3]\n")
+    items, skipped = items_from_jsonl(str(p))
+    assert items == []
+    assert skipped["invalid_question"] == 1
+
+
+def test_jsonl_non_dict_question_entry_is_skipped_not_raised(tmp_path):
+    p = tmp_path / "bad.jsonl"
+    p.write_text('{"state": "foo", "questions": [null]}\n')
+    items, skipped = items_from_jsonl(str(p))
+    assert items == []
+    assert skipped["invalid_question"] == 1
+
+
+def test_jsonl_non_list_questions_value_is_skipped_not_raised(tmp_path):
+    p = tmp_path / "bad.jsonl"
+    p.write_text('{"state": "foo", "questions": 7}\n')
+    items, skipped = items_from_jsonl(str(p))
+    assert items == []
+    assert skipped["invalid_question"] == 1
