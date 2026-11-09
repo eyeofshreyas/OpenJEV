@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_model
+from safetensors.torch import load_model, save_model
 from transformers import get_cosine_schedule_with_warmup
 
 from openjev.data import Item, _gold_keys, split_items, update_budget
@@ -155,12 +155,20 @@ def accuracy(model, tok, items: list[Item], cfg: TrainConfig, device) -> float:
     return correct / len(items)
 
 
-def train(items: list[Item], model, tok, out_dir, cfg: TrainConfig | None = None, skipped=None) -> dict:
+def train(
+    items: list[Item], model, tok, out_dir, cfg: TrainConfig | None = None, skipped=None, resume: bool = False
+) -> dict:
     """Fine-tune ``model`` on ``items`` and return a report on the run.
 
     The calibration set is held out first, and a run with nothing left to
     train on is refused: a loader whose rows were all rejected must not report
     success with a large skip count and a training set of zero.
+
+    ``resume=True`` picks a crashed run back up from ``out_dir/checkpoint_latest``
+    at the epoch after the last one it finished, with the schedule, the Adam
+    moments and the loss history it left off with. It is explicit rather than
+    automatic, so a stale checkpoint left in ``out_dir`` can never silently
+    hijack a fresh run.
     """
     cfg = cfg or TrainConfig()
     train_items, calib_items = split_items(items, cfg.calib_frac, cfg.seed)
@@ -193,19 +201,29 @@ def train(items: list[Item], model, tok, out_dir, cfg: TrainConfig | None = None
         f"effective batch {cfg.micro_batch * cfg.grad_accum})"
     )
 
-    rng = random.Random(cfg.seed)
+    updates, epoch_loss, start_epoch = 0, [], 0
+    if resume:
+        state = load_checkpoint(model, out_dir, optimizer, scheduler, scaler)
+        start_epoch = state.get("epoch", 0)
+        updates = state.get("updates", 0)
+        epoch_loss = list(state.get("epoch_loss", []))
+        print(f"[train] resumed after epoch {start_epoch} at update {updates} of {budget}")
+
     state_ids: dict[str, list[int]] = {}
     was_training = model.training
     model.train()
 
-    updates, epoch_loss = 0, []
     try:
-        for epoch in range(cfg.epochs):
+        for epoch in range(start_epoch, cfg.epochs):
+            # Seeded per epoch rather than from one rolling generator, so a resumed epoch
+            # sees the item order and option permutations it would have seen anyway.
+            rng = random.Random(f"{cfg.seed}:{epoch}")
             order = list(train_items)
             rng.shuffle(order)
             micro = [order[i : i + cfg.micro_batch] for i in range(0, len(order), cfg.micro_batch)]
 
             total_loss, correct, seen = 0.0, 0, 0
+            group_start = 0
             optimizer.zero_grad(set_to_none=True)
 
             for step, chunk in enumerate(micro, start=1):
@@ -222,9 +240,15 @@ def train(items: list[Item], model, tok, out_dir, cfg: TrainConfig | None = None
                         f"micro-batch {step}/{len(micro)}, after {updates} optimizer updates"
                     )
 
-                # Divided by grad_accum so the accumulated gradient is the mean over the
-                # effective batch — its magnitude must not scale with grad_accum.
-                scaler.scale(loss / cfg.grad_accum).backward()
+                # Divided by the group's own size so the accumulated gradient is the mean
+                # over the effective batch — its magnitude must not scale with grad_accum.
+                # The trailing group of an epoch is usually short, and dividing it by
+                # grad_accum anyway would quietly shrink that update by up to grad_accum
+                # times (and shrink *every* update when an epoch has fewer micro-batches
+                # than grad_accum), which moves the effective learning rate with a setting
+                # that is supposed to only change how the batch is assembled.
+                group_size = min(cfg.grad_accum, len(micro) - group_start)
+                scaler.scale(loss / group_size).backward()
 
                 total_loss += loss.item() * len(chunk)
                 correct += int((logits.argmax(-1) == target.argmax(-1)).sum())
@@ -238,10 +262,22 @@ def train(items: list[Item], model, tok, out_dir, cfg: TrainConfig | None = None
                     scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
                     updates += 1
+                    group_start = step
 
             epoch_loss.append(total_loss / seen)
             print(f"[train] epoch {epoch + 1}/{cfg.epochs}: loss {epoch_loss[-1]:.4f}, accuracy {correct / seen:.3f}")
-            save_checkpoint(model, out_dir)
+            save_checkpoint(
+                model,
+                out_dir,
+                state={
+                    "epoch": epoch + 1,
+                    "updates": updates,
+                    "epoch_loss": epoch_loss,
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "scaler": scaler.state_dict(),
+                },
+            )
     finally:
         model.train(was_training)
 
@@ -259,12 +295,42 @@ def train(items: list[Item], model, tok, out_dir, cfg: TrainConfig | None = None
     }
 
 
-def save_checkpoint(model, out_dir, name: str = "checkpoint_latest") -> Path:
-    """Write the model's weights to ``out_dir/name/model.safetensors``.
+def save_checkpoint(model, out_dir, state: dict | None = None, name: str = "checkpoint_latest") -> Path:
+    """Write the weights, and the state a run needs to resume, to ``out_dir/name/``.
 
-    Called after every epoch, so a crash costs one epoch rather than the run.
+    Called after every epoch, so a crash or a Kaggle timeout costs one epoch
+    rather than the run. Weights alone would not buy that: a run restarted from
+    them begins the cosine schedule again at warmup with cold Adam moments,
+    which is a new run from a warm start, not a resume. So the optimizer,
+    scheduler and scaler state and the epoch index go in beside the weights —
+    the loop that owns them is the loop that writes them.
+
+    This is resume state, not the publishable inference checkpoint.
     """
     path = Path(out_dir) / name
     path.mkdir(parents=True, exist_ok=True)
     save_model(model, str(path / "model.safetensors"))
+    if state is not None:
+        torch.save(state, path / "trainer_state.pt")
     return path
+
+
+def load_checkpoint(model, out_dir, optimizer=None, scheduler=None, scaler=None, name="checkpoint_latest") -> dict:
+    """Restore a checkpoint written by ``save_checkpoint`` and return its state.
+
+    The weights always load. The optimizer, scheduler and scaler load when they
+    are passed, which is what turns a warm start into a resume. Returns the
+    saved state (``{}`` for a weights-only checkpoint), so the caller can pick
+    up the epoch index and the update count.
+    """
+    path = Path(out_dir) / name
+    load_model(model, str(path / "model.safetensors"))
+
+    state_path = path / "trainer_state.pt"
+    if not state_path.exists():
+        return {}
+    state = torch.load(state_path, weights_only=True)
+    for key, obj in (("optimizer", optimizer), ("scheduler", scheduler), ("scaler", scaler)):
+        if obj is not None:
+            obj.load_state_dict(state[key])
+    return state
