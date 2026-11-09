@@ -2,6 +2,7 @@ import torch
 import pytest
 from transformers import AutoTokenizer
 
+from openjev.data import Item, target_vector
 from openjev.model import build_model, tiny_config
 
 CHOICE = {"type": "choice", "instructions": "i", "criteria": {"a": "", "b": "", "c": ""}}
@@ -17,6 +18,37 @@ def tok():
 @pytest.fixture(scope="module")
 def tiny_model(tok):
     return build_model(config=tiny_config(vocab_size=len(tok))).eval()
+
+
+_SYNTHETIC = {"type": "noul", "instructions": "does the report say the statement holds?"}
+
+
+def _synthetic_items(n):
+    """A separable two-label task: the answer word is present in the state.
+
+    Deliberately trivial — several tests need the tiny model to be *able* to
+    learn this, so that a failure to learn points at the loop, not the task.
+
+    The question is ``noul`` rather than ``choice`` on purpose. A ``choice``
+    question's options are permuted every epoch (see ``train.shuffle_options``),
+    so its answer can only be found by matching the option text against the
+    state — attention a freshly initialized tiny encoder does not have and
+    cannot acquire in a few hundred CPU steps (measured: it parks at the
+    uniform plateau for 300 updates). A ``noul`` question's two options are
+    fixed and ordered, so the task stays learnable.
+    """
+    items = []
+    for i in range(n):
+        holds = i % 2 == 0
+        items.append(
+            Item(
+                state=f"report {i}: the statement is {'true' if holds else 'false'}",
+                qid="holds",
+                question=_SYNTHETIC,
+                target=target_vector(_SYNTHETIC, expected=holds),
+            )
+        )
+    return items
 
 
 def _fake_batch(b, length, k, counts=None):
