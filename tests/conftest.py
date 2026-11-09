@@ -56,6 +56,39 @@ def _synthetic_items(n):
     return items
 
 
+def _synthetic_cases(n):
+    """``_synthetic_items``, wrapped in the public case shape ``evaluate`` consumes.
+
+    One ``noul`` question per case, so ``n`` cases is also ``n`` evaluated items.
+    """
+    cases = []
+    for i in range(n):
+        holds = i % 2 == 0
+        cases.append(
+            {
+                "state": f"report {i}: the statement is {'true' if holds else 'false'}",
+                "questions": {"holds": _SYNTHETIC},
+                "expected": {"holds": holds},
+            }
+        )
+    return cases
+
+
+def _score_cases(n):
+    """``n`` cases, each a single ``score`` question cycling through its levels."""
+    cases = []
+    for i in range(n):
+        level = i % len(SCORE["criteria"])
+        cases.append(
+            {
+                "state": f"case {i}: level is {level}",
+                "questions": {"q": SCORE},
+                "expected": {"q": level},
+            }
+        )
+    return cases
+
+
 def _miscalibrated_items(n, model, tok):
     """Build a confidently-miscalibrated model and a fifth-wrong target set for it.
 
