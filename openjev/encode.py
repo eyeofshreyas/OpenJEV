@@ -9,6 +9,8 @@ A question has one of three types:
 import json
 from dataclasses import dataclass
 
+import torch
+
 QTYPES = {"choice": 0, "score": 1, "noul": 2}
 
 MAX_LEN = 1024
@@ -219,3 +221,38 @@ def build_sequence(
         state_tokens=state_tokens,
         state_tokens_used=state_tokens_used,
     )
+
+
+def collate(encoded: list[Encoded], pad_id: int) -> dict[str, torch.Tensor]:
+    """Pad a list of ``Encoded`` sequences into one batch.
+
+    ``input_ids``/``attention_mask`` pad to the batch's longest sequence;
+    ``marker_pos``/``marker_mask`` pad independently to the batch's largest
+    option count. A padded marker slot points at index 0 (always valid) with
+    its mask entry false, so a downstream gather can never read out of bounds.
+    """
+    B = len(encoded)
+    L = max(len(e.ids) for e in encoded)
+    K = max(e.n_options for e in encoded)
+
+    input_ids = torch.full((B, L), pad_id, dtype=torch.long)
+    attention_mask = torch.zeros((B, L), dtype=torch.long)
+    marker_pos = torch.zeros((B, K), dtype=torch.long)
+    marker_mask = torch.zeros((B, K), dtype=torch.bool)
+    qtype = torch.empty(B, dtype=torch.long)
+
+    for i, e in enumerate(encoded):
+        n = len(e.ids)
+        input_ids[i, :n] = torch.tensor(e.ids, dtype=torch.long)
+        attention_mask[i, :n] = 1
+        marker_pos[i, : e.n_options] = torch.tensor(e.markers, dtype=torch.long)
+        marker_mask[i, : e.n_options] = True
+        qtype[i] = e.qtype
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "marker_pos": marker_pos,
+        "marker_mask": marker_mask,
+        "qtype": qtype,
+    }
