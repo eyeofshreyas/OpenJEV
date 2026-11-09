@@ -43,3 +43,35 @@ def test_report_carries_latency_and_n(tiny_model, tok):
     report = evaluate(tiny_model, tok, _synthetic_cases(n=20))
     assert report["n"] == 20 and report["latency_ms_median"] > 0
     assert report["latency_ms_p95"] >= report["latency_ms_median"]
+
+
+def test_brier_by_type_matches_the_single_type_present(tiny_model, tok):
+    # Every case here is ``noul``, so the per-type figure must equal the aggregate.
+    report = evaluate(tiny_model, tok, _synthetic_cases(n=20))
+    assert report["brier_by_type"]["noul"] == pytest.approx(report["brier"])
+
+
+def test_per_decision_latency_is_reported_alongside_per_call(tiny_model, tok):
+    report = evaluate(tiny_model, tok, _synthetic_cases(n=20))
+    assert report["latency_ms_per_decision_median"] > 0
+    assert report["latency_ms_per_decision_p95"] >= report["latency_ms_per_decision_median"]
+
+
+def test_a_single_partial_batch_still_reports_latency(tiny_model, tok):
+    # Fewer cases than the batch size means every call is partial; the per-call
+    # pool must fall back to using it rather than reporting an empty-pool zero.
+    report = evaluate(tiny_model, tok, _synthetic_cases(n=5), batch_size=16)
+    assert report["latency_ms_median"] > 0
+    assert report["latency_ms_per_decision_median"] > 0
+
+
+def test_ece_of_no_predictions_is_zero():
+    assert ece(np.array([]), np.array([])) == 0.0
+
+
+def test_brier_of_no_predictions_is_zero():
+    assert brier(np.empty((0, 3)), np.empty((0, 3))) == 0.0
+
+
+def test_random_baseline_of_no_cases_is_zero():
+    assert random_baseline([]) == 0.0
