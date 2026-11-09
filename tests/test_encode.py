@@ -1,6 +1,7 @@
 import pytest
 from openjev.encode import (
     QTYPES,
+    OptionBudgetExceeded,
     OptionCollision,
     build_sequence,
     render_options,
@@ -81,6 +82,14 @@ def test_mask_token_in_instructions_and_options_is_stripped(tok):
     assert sum(1 for i in enc.ids if i == tok.mask_token_id) == 2
 
 
+def test_mask_token_in_nested_criteria_value_is_stripped(tok):
+    q = {"type": "choice", "instructions": "i",
+         "criteria": {"a": {"note": tok.mask_token}, "b": "y"}}
+    enc = build_sequence(tok, "s", q)
+    assert len(enc.markers) == 2 == enc.n_options
+    assert sum(1 for i in enc.ids if i == tok.mask_token_id) == 2
+
+
 def test_long_state_is_truncated_and_reported(tok):
     q = {"type": "choice", "instructions": "i", "criteria": {"a": "x", "b": "y"}}
     enc = build_sequence(tok, "word " * 4000, q)
@@ -99,6 +108,12 @@ def test_colliding_options_raise_naming_the_question(tok):
     shared = "identical prefix " * 40
     q = {"type": "choice", "instructions": "i", "criteria": {shared + "a": "", shared + "b": ""}}
     with pytest.raises(OptionCollision, match="dept"):
+        build_sequence(tok, "s", q, qid="dept")
+
+
+def test_too_many_options_raise_budget_exceeded_naming_the_question(tok):
+    q = {"type": "choice", "instructions": "i", "criteria": {f"o{i}": "" for i in range(230)}}
+    with pytest.raises(OptionBudgetExceeded, match="dept"):
         build_sequence(tok, "s", q, qid="dept")
 
 

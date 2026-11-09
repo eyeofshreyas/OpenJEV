@@ -14,6 +14,7 @@ QTYPES = {"choice": 0, "score": 1, "noul": 2}
 MAX_LEN = 1024
 HEAD_MAX_LEN = 256
 OPTION_MAX_TOKENS = 48
+MIN_OPTION_TOKENS = 4
 
 _NOUL_FALSE = "false: no, the statement does not hold"
 _NOUL_TRUE = "true: yes, the statement holds"
@@ -92,23 +93,13 @@ class OptionCollision(ValueError):
     """Two options truncate to the same token span, making a question unanswerable."""
 
 
+class OptionBudgetExceeded(ValueError):
+    """A question's options cannot fit the head budget even at the minimum share."""
+
+
 def strip_mask(tok, text: str) -> str:
     """Remove any literal mask-token text, so a caller can never forge a marker."""
     return text.replace(tok.mask_token, "")
-
-
-def _clean_question(tok, q: dict) -> dict:
-    """Return a copy of ``q`` with the mask token stripped from every string field."""
-    clean = dict(q)
-    clean["instructions"] = strip_mask(tok, q["instructions"])
-    if q["type"] == "choice":
-        clean["criteria"] = {
-            strip_mask(tok, label): strip_mask(tok, value) if isinstance(value, str) else value
-            for label, value in q["criteria"].items()
-        }
-    elif q["type"] == "score":
-        clean["criteria"] = [strip_mask(tok, v) if isinstance(v, str) else v for v in q["criteria"]]
-    return clean
 
 
 @dataclass
@@ -129,23 +120,34 @@ def build_head(tok, q: dict, head_max_len: int = HEAD_MAX_LEN, qid: str = "q") -
     """Build ``[CLS] <type> question: <instructions> [SEP] [MASK] opt0 [MASK] opt1 ... [SEP]``.
 
     Returns the head's token ids and the index of each option's ``[MASK]`` marker.
+    The mask token is stripped from the rendered option and instruction text right
+    before it is tokenized — the boundary where text becomes tokens — so no caller
+    value shape (a raw string, or a dict/list rendered to JSON) can forge a marker.
     Each option is truncated at the tokenizer to ``OPTION_MAX_TOKENS``; if the options
-    still overflow ``head_max_len``, each is cut further to an equal share (minimum 4
-    tokens) and the instructions are clamped to whatever room remains, so the markers
-    always survive. Raises ``OptionCollision`` if two options truncate to the same
-    token span.
+    still overflow ``head_max_len``, each is cut further to an equal share (minimum
+    ``MIN_OPTION_TOKENS``) and the instructions are clamped to whatever room remains,
+    so the markers always survive. Raises ``OptionBudgetExceeded`` if the options
+    cannot fit the head even at that minimum share, and ``OptionCollision`` if two
+    options truncate to the same token span.
     """
-    option_texts = render_options(q)
+    option_texts = [strip_mask(tok, text) for text in render_options(q)]
     n = len(option_texts)
+
+    fixed = 3 + n  # [CLS] + [SEP] after instructions + [SEP] at the end, one [MASK] per option
+    if fixed + n * MIN_OPTION_TOKENS > head_max_len:
+        raise OptionBudgetExceeded(
+            f"question {qid!r}: {n} options cannot fit head_max_len={head_max_len} "
+            f"even at {MIN_OPTION_TOKENS} tokens each"
+        )
+
     option_ids = [
         tok(text, add_special_tokens=False, truncation=True, max_length=OPTION_MAX_TOKENS)["input_ids"]
         for text in option_texts
     ]
 
-    fixed = 3 + n  # [CLS] + [SEP] after instructions + [SEP] at the end, one [MASK] per option
     total_option_tokens = sum(len(ids) for ids in option_ids)
     if fixed + total_option_tokens > head_max_len:
-        share = max(4, (head_max_len - fixed) // n)
+        share = max(MIN_OPTION_TOKENS, (head_max_len - fixed) // n)
         option_ids = [ids[:share] for ids in option_ids]
         total_option_tokens = sum(len(ids) for ids in option_ids)
 
@@ -158,7 +160,8 @@ def build_head(tok, q: dict, head_max_len: int = HEAD_MAX_LEN, qid: str = "q") -
             )
         seen[key] = i
 
-    instructions_ids = tok(f"{q['type']} question: {q['instructions']}", add_special_tokens=False)["input_ids"]
+    instructions_text = strip_mask(tok, f"{q['type']} question: {q['instructions']}")
+    instructions_ids = tok(instructions_text, add_special_tokens=False)["input_ids"]
     instructions_budget = max(0, head_max_len - fixed - total_option_tokens)
     instructions_ids = instructions_ids[:instructions_budget]
 
@@ -190,8 +193,7 @@ def build_sequence(
     room is left in ``max_len`` after the head and the closing ``[SEP]``, and the
     loss, if any, is reported on the returned ``Encoded`` rather than guessed at.
     """
-    clean_q = _clean_question(tok, q)
-    validate_question(qid, clean_q)
+    validate_question(qid, q)
 
     if state_ids is None:
         state_text = strip_mask(tok, validate_state(state))
@@ -199,17 +201,20 @@ def build_sequence(
 
     state_tokens = len(state_ids)
 
-    head_ids, markers = build_head(tok, clean_q, head_max_len=head_max_len, qid=qid)
+    head_ids, markers = build_head(tok, q, head_max_len=head_max_len, qid=qid)
 
     room = max(0, max_len - len(head_ids) - 1)
     state_tokens_used = min(state_tokens, room)
 
     ids = head_ids + state_ids[:state_tokens_used] + [tok.sep_token_id]
+    assert len(ids) <= max_len, (
+        f"question {qid!r}: assembled sequence of {len(ids)} tokens exceeds max_len={max_len}"
+    )
 
     return Encoded(
         ids=ids,
         markers=markers,
-        qtype=QTYPES[clean_q["type"]],
+        qtype=QTYPES[q["type"]],
         n_options=len(markers),
         state_tokens=state_tokens,
         state_tokens_used=state_tokens_used,
