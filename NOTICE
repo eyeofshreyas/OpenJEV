@@ -1,0 +1,8 @@
+OpenJEV
+Copyright 2026 OpenJEV contributors
+
+This product is licensed under the Apache License, Version 2.0.
+
+This project is an acknowledged simplification of laya (NandhaKishorM/laya,
+Apache License, Version 2.0). The sequence format, the checkpoint layout,
+and the data format follow laya's design.
