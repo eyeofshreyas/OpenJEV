@@ -4,6 +4,10 @@ from transformers import AutoTokenizer
 
 from openjev.model import build_model, tiny_config
 
+CHOICE = {"type": "choice", "instructions": "i", "criteria": {"a": "", "b": "", "c": ""}}
+SCORE = {"type": "score", "instructions": "i", "criteria": ["lo", "mid", "hi"]}
+NOUL = {"type": "noul", "instructions": "i"}
+
 
 @pytest.fixture(scope="module")
 def tok():
