@@ -1,0 +1,4 @@
+# Verified on torch 2.14.0 / transformers 5.17.0 / Python 3.12, Apple Silicon, CPU and MPS.
+# transformers 4.36 cannot load Qwen2 or Qwen3 and will fail at the tokenizer.
+torch>=2.2
+transformers>=5.0
