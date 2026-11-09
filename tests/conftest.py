@@ -1,3 +1,4 @@
+import copy
 import random
 
 import torch
@@ -56,8 +57,7 @@ def _synthetic_items(n):
 
 
 def _miscalibrated_items(n, model, tok):
-    """Make ``model`` emit near-one-hot probabilities, then point a fifth of
-    the targets away from its top option — overconfidence by construction.
+    """Build a confidently-miscalibrated model and a fifth-wrong target set for it.
 
     A freshly-built, untrained marker-based model is no help here: every
     option's marker is the literal same ``[MASK]`` token, so its hidden state
@@ -70,25 +70,31 @@ def _miscalibrated_items(n, model, tok):
     between "no effect" and "the model just memorizes the noise" (measured
     both failure modes directly).
 
-    So instead of training a signal in, this scales the scorer's final
-    ``Linear`` by a large constant: whatever tiny (meaningless) logit gap the
-    model already has becomes a huge one, and softmax reports ~0.99+
-    confidence for whichever option that gap happens to favour — regardless
-    of why. Pointing ~20% of each item's target at a *different* option (one
-    the model is not reporting ~0.99 for) then makes the model wrong exactly
-    that often while still ~0.99 confident every time: confidently right most
-    of the time, confidently wrong a fifth of the time, by construction
-    rather than by hoping a training run lands in a narrow window.
+    So instead of training a signal in, this works on its *own copy* of
+    ``model`` (the caller's model is never mutated — a fixture that scales a
+    shared, module-scoped model in place would make this file's tests order-
+    and count-dependent) and scales that copy's scorer's final ``Linear`` by
+    a constant large enough to dominate the ~1e-6 natural logit gap, turning
+    it into one comfortably big enough to produce confident — but not
+    saturated-against-the-fitter's-own-search-bound — probabilities.
+    Pointing ~20% of each item's target at a *different* option (one the
+    copy is not favouring) then makes the copy wrong exactly that often
+    while still confident every time: confidently right most of the time,
+    confidently wrong a fifth of the time, by construction rather than by
+    hoping a training run lands in a narrow window.
+
+    Returns ``(items, model)`` — the copy, not the original — since the
+    caller needs the exact model the items were built against.
     """
-    # This tiny, untrained encoder's natural within-row logit gap measures ~1e-6
-    # (markers share the literal [MASK] token — see the docstring above), so a
-    # "large constant" here has to be large enough to actually dominate that,
-    # not merely 20x it: 1e9 is what pushes every item's top-option probability
-    # comfortably past 0.999 (measured), not just the mean of them.
+    model = copy.deepcopy(model)
+    # Chosen by measurement, not guesswork: scaled linearly from the ~1e-6 natural
+    # gap, this lands the fitted temperature around 3-4, comfortably inside
+    # [0.25, 10] rather than pinned to either end (a fit pinned to the upper
+    # bound can't be told apart from a fitter that just always returns the max).
     with torch.no_grad():
         final = model.scorer[-1]  # the Linear(d, 1) that turns a marker's hidden state into its logit
-        final.weight *= 1e9
-        final.bias *= 1e9
+        final.weight *= 5e6
+        final.bias *= 5e6
 
     labels = list(CHOICE["criteria"])
     items = [
@@ -113,7 +119,7 @@ def _miscalibrated_items(n, model, tok):
         target_label = rng.choice([o for o in labels if o != top_label]) if wrong else top_label
         out.append(Item(state=item.state, qid=item.qid, question=CHOICE,
                          target=target_vector(CHOICE, expected=target_label)))
-    return out
+    return out, model
 
 
 @torch.no_grad()

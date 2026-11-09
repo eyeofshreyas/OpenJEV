@@ -7,17 +7,23 @@ from tests.conftest import CHOICE, _accuracy, _fake_batch, _miscalibrated_items,
 
 
 def test_temperature_reduces_nll_of_an_overconfident_model(tiny_model, tok):
-    items = _miscalibrated_items(n=200, model=tiny_model, tok=tok)
-    temps, notes = fit_temperatures(tiny_model, items, tok, TrainConfig())
+    original_weight = tiny_model.scorer[-1].weight.clone()
+    items, model = _miscalibrated_items(n=200, model=tiny_model, tok=tok)
+    temps, notes = fit_temperatures(model, items, tok, TrainConfig())
     assert temps[QTYPES["choice"]] > 1.0
+    # Strictly inside the search bounds: a fitter that just always returned the
+    # grid's own ceiling would otherwise pass this test identically to a real fit.
+    assert 0.25 < temps[QTYPES["choice"]] < 10.0
     assert notes["choice"]["nll_after"] < notes["choice"]["nll_before"]
+    # The fixture must not have mutated the shared, module-scoped fixture model.
+    assert torch.equal(tiny_model.scorer[-1].weight, original_weight)
 
 
 def test_temperature_never_changes_accuracy(tiny_model, tok):
-    items = _miscalibrated_items(n=200, model=tiny_model, tok=tok)
-    before = _accuracy(tiny_model, items, tok, temperature=None)
-    temps, _ = fit_temperatures(tiny_model, items, tok, TrainConfig())
-    assert _accuracy(tiny_model, items, tok, temperature=temps) == before
+    items, model = _miscalibrated_items(n=200, model=tiny_model, tok=tok)
+    before = _accuracy(model, items, tok, temperature=None)
+    temps, _ = fit_temperatures(model, items, tok, TrainConfig())
+    assert _accuracy(model, items, tok, temperature=temps) == before
 
 
 def test_too_few_items_leaves_temperature_unfitted(tiny_model, tok):
