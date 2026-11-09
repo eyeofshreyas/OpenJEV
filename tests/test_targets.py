@@ -19,6 +19,12 @@ def test_noul_true_is_the_second_slot():
     assert target_vector(NOUL, expected=False)[0] > target_vector(NOUL, expected=False)[1]
 
 
+def test_noul_accepts_the_string_forms_of_true_and_false():
+    assert target_vector(NOUL, expected="true") == pytest.approx(target_vector(NOUL, expected=True))
+    assert target_vector(NOUL, expected="false") == pytest.approx(target_vector(NOUL, expected=False))
+    assert target_vector(NOUL, expected="True") == pytest.approx(target_vector(NOUL, expected=True))
+
+
 def test_fractional_level_splits_between_neighbours():
     v = target_vector(SCORE, expected=1.5, smoothing=0.0)
     assert v == pytest.approx([0.0, 0.5, 0.5])

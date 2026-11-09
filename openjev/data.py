@@ -68,6 +68,12 @@ def _expected_vector(q: dict, expected, smoothing: float) -> list[float]:
     labels = _expected_labels(q)
     n = len(labels)
 
+    if q["type"] == "noul" and isinstance(expected, str) and expected.strip().lower() in ("true", "false"):
+        # A producer sending JSON over HTTP (or hand-writing a fixture) may naturally
+        # reach for the string form; both ends of this project's own case shape only
+        # ever carry a bool here, but a caller outside our control is not guaranteed to.
+        expected = expected.strip().lower() == "true"
+
     if q["type"] == "score" and isinstance(expected, (int, float)) and not isinstance(expected, bool):
         floor = math.floor(expected)
         frac = expected - floor
@@ -158,9 +164,12 @@ def _build_item(state, qid, question, expected, gold, smoothing, skipped: Counte
 def items_from_jsonl(path, smoothing: float = SMOOTHING) -> tuple[list[Item], Counter]:
     """Read labelled decisions from a JSON-lines file of cases.
 
-    Each line is a case: ``{"state": ..., "questions": [{"qid", "question",
-    "expected"|"gold"}, ...]}``. One ``Item`` is produced per (case, question).
-    A malformed line never raises past this function — it is counted under
+    Each line is a case: ``{"state": ..., "questions": {qid: question, ...},
+    "expected"|"gold": {qid: answer, ...}}`` — the same case shape the public
+    loaders in this module produce (``load_typed_decisions``, ``load_massive``,
+    ``load_boolq``, ``load_ag_news``), so a case from any of them reads here
+    unchanged. One ``Item`` is produced per (case, question). A malformed
+    line never raises past this function — it is counted under
     ``invalid_question`` and reading continues.
     """
     items: list[Item] = []
@@ -182,21 +191,35 @@ def items_from_jsonl(path, smoothing: float = SMOOTHING) -> tuple[list[Item], Co
                 continue
 
             state = case.get("state")
-            questions = case.get("questions", [])
-            if not isinstance(questions, list):
+            questions = case.get("questions", {})
+            if not isinstance(questions, dict):
                 skipped["invalid_question"] += 1
                 continue
 
-            for entry in questions:
-                if not isinstance(entry, dict):
+            expected_raw = case.get("expected")
+            gold_raw = case.get("gold")
+            # "expected"/"gold" are each optional, but if present must be a
+            # qid -> answer dict; a present-but-wrong-shaped one invalidates
+            # every question in the case, each counted individually below.
+            answers_malformed = (expected_raw is not None and not isinstance(expected_raw, dict)) or (
+                gold_raw is not None and not isinstance(gold_raw, dict)
+            )
+            expected_map = expected_raw if isinstance(expected_raw, dict) else {}
+            gold_map = gold_raw if isinstance(gold_raw, dict) else {}
+
+            for qid, question in questions.items():
+                if not isinstance(question, dict):
+                    skipped["invalid_question"] += 1
+                    continue
+                if answers_malformed:
                     skipped["invalid_question"] += 1
                     continue
                 item = _build_item(
                     state,
-                    entry.get("qid"),
-                    entry.get("question"),
-                    entry.get("expected"),
-                    entry.get("gold"),
+                    qid,
+                    question,
+                    expected_map.get(qid),
+                    gold_map.get(qid),
                     smoothing,
                     skipped,
                 )
@@ -253,17 +276,33 @@ def items_from_csv(
     return items, question, skipped
 
 
+# Commit SHAs on each repo's auto-generated ``refs/convert/parquet`` branch, resolved
+# once and pinned here. That branch is mutable — the Hub can regenerate it — and this
+# project publishes benchmark numbers against this data, so a fetch has to name an
+# immutable commit rather than float with whatever the branch currently points at.
+_PARQUET_REVISIONS = {
+    "LocalLLaMA/typed-decisions": "4fb1c4cdac295cee9ba08ce686e04f2819cac540",
+    "AmazonScience/massive": "ed58ac423a2f4121720918bf5301577edce4ffd3",
+    "google/boolq": "d89fc6ef4da46f056176dcf941ba670524ab1c87",
+    "fancyzhx/ag_news": "4efd5262b756aee7a12710ca78c74aa258660063",
+}
+
+
 def _hf_parquet_split(repo_id: str, config: str, split: str):
     """Load one split's auto-converted parquet shard, without preparing its siblings.
 
     ``datasets.load_dataset(repo_id, config, split=...)`` still downloads and
     builds every split of the config on first use. Pointing the ``parquet``
-    builder directly at the Hub's ``refs/convert/parquet`` mirror for just the
-    requested split avoids paying for the splits nobody asked for.
+    builder directly at a pinned commit on the Hub's parquet mirror for just
+    the requested split avoids paying for the splits nobody asked for, and
+    keeps the fetch reproducible. The split is globbed (``*.parquet``), not a
+    literal ``0000.parquet``, so a split that grows past one shard is still
+    read in full instead of silently truncated.
     """
     from datasets import load_dataset
 
-    path = f"hf://datasets/{repo_id}@refs%2Fconvert%2Fparquet/{config}/{split}/0000.parquet"
+    revision = _PARQUET_REVISIONS[repo_id]
+    path = f"hf://datasets/{repo_id}@{revision}/{config}/{split}/*.parquet"
     return load_dataset("parquet", data_files=path, split="train")
 
 
@@ -331,8 +370,7 @@ def load_boolq(split: str) -> list[dict]:
     cases = []
     for row in ds:
         state = f"{row['passage']}\n\nQuestion: {row['question']}"
-        gold_label = "true" if row["answer"] else "false"
-        cases.append({"state": state, "questions": {qid: question}, "expected": {qid: gold_label}})
+        cases.append({"state": state, "questions": {qid: question}, "expected": {qid: bool(row["answer"])}})
     return cases
 
 

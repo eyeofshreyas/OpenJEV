@@ -1,3 +1,5 @@
+import json
+
 from openjev.data import items_from_jsonl, items_from_csv, update_budget, split_items
 
 
@@ -50,17 +52,71 @@ def test_jsonl_non_dict_case_is_skipped_not_raised(tmp_path):
     assert skipped["invalid_question"] == 1
 
 
-def test_jsonl_non_dict_question_entry_is_skipped_not_raised(tmp_path):
+def test_jsonl_non_dict_question_value_is_skipped_not_raised(tmp_path):
     p = tmp_path / "bad.jsonl"
-    p.write_text('{"state": "foo", "questions": [null]}\n')
+    p.write_text('{"state": "foo", "questions": {"q1": null}}\n')
     items, skipped = items_from_jsonl(str(p))
     assert items == []
     assert skipped["invalid_question"] == 1
 
 
-def test_jsonl_non_list_questions_value_is_skipped_not_raised(tmp_path):
+def test_jsonl_non_dict_questions_value_is_skipped_not_raised(tmp_path):
     p = tmp_path / "bad.jsonl"
     p.write_text('{"state": "foo", "questions": 7}\n')
     items, skipped = items_from_jsonl(str(p))
     assert items == []
     assert skipped["invalid_question"] == 1
+
+
+def test_jsonl_non_dict_expected_is_skipped_not_raised(tmp_path):
+    p = tmp_path / "bad.jsonl"
+    case = {
+        "state": "foo",
+        "questions": {"q1": {"type": "noul", "instructions": "ok?"}},
+        "expected": "not-a-dict",
+    }
+    p.write_text(json.dumps(case) + "\n")
+    items, skipped = items_from_jsonl(str(p))
+    assert items == []
+    assert skipped["invalid_question"] == 1
+
+
+def test_jsonl_consumes_a_case_shaped_like_the_public_loaders(tmp_path):
+    """A case in the exact shape ``load_ag_news`` produces must not be skipped.
+
+    This is the constraint Task 8's review flagged: the reader has to speak
+    the same case shape the public loaders emit, not a shape invented for
+    the on-disk fixture.
+    """
+    case = {
+        "state": "Oil prices rose sharply after the embargo was announced.",
+        "questions": {
+            "topic": {
+                "type": "choice",
+                "instructions": "Which topic does this news text belong to?",
+                "criteria": {"World": "", "Sports": "", "Business": "", "Sci/Tech": ""},
+            }
+        },
+        "expected": {"topic": "Business"},
+    }
+    p = tmp_path / "loader_case.jsonl"
+    p.write_text(json.dumps(case) + "\n")
+    items, skipped = items_from_jsonl(str(p))
+    assert len(items) == 1
+    assert not skipped
+
+
+def test_jsonl_accepts_a_string_noul_answer(tmp_path):
+    """``load_boolq`` emits a bool, but a caller sending JSON over HTTP may
+    naturally send the string form instead; the reader normalizes either.
+    """
+    case = {
+        "state": "The report is final.",
+        "questions": {"flag": {"type": "noul", "instructions": "is this final?"}},
+        "expected": {"flag": "true"},
+    }
+    p = tmp_path / "noul_case.jsonl"
+    p.write_text(json.dumps(case) + "\n")
+    items, skipped = items_from_jsonl(str(p))
+    assert len(items) == 1
+    assert not skipped

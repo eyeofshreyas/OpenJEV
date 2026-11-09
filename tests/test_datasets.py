@@ -45,6 +45,9 @@ def test_boolq_validation_split_shape():
     assert set(c["questions"]) == set(c["expected"])
     q = next(iter(c["questions"].values()))
     assert q["type"] == "noul"
+    # A bool, not "true"/"false" strings — target_vector's noul path takes a bool
+    # (or the normalized string form, but the producer should not rely on that).
+    assert isinstance(c["expected"]["answer"], bool)
 
 
 @pytest.mark.network
