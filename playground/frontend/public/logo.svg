@@ -1,0 +1,11 @@
+<svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+  <rect width="40" height="40" rx="8" fill="#15161a"/>
+  <!-- one state, three typed questions branching off it, each landing on a called answer -->
+  <circle cx="10" cy="20" r="3.4" fill="#ff2e9a"/>
+  <path d="M13 20 L24 8" stroke="#ff2e9a" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M13 20 L24 20" stroke="#ff2e9a" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M13 20 L24 32" stroke="#ff2e9a" stroke-width="2.2" stroke-linecap="round"/>
+  <circle cx="27" cy="8" r="2.6" fill="#ff2e9a"/>
+  <circle cx="27" cy="20" r="2.6" fill="#ffffff"/>
+  <circle cx="27" cy="32" r="2.6" fill="#ff2e9a"/>
+</svg>
