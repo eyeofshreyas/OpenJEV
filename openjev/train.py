@@ -532,8 +532,22 @@ def load_checkpoint(*args, optimizer=None, scheduler=None, scaler=None, name="ch
     model = DecisionModel(encoder, head_layers=rl_agent_config.get("head_layers", 2))
 
     head_state = load_file(str(path / "model.safetensors"))
+    # ``strict=False`` because every ``encoder.*`` key legitimately lives in the
+    # encoder directory instead — which is exactly why ``missing`` cannot just be
+    # ignored: any *other* absent key is a head, scorer, type embedding or
+    # temperature left randomly initialised, and the model would then serve
+    # confident garbage while calling itself a trained checkpoint. Raised rather
+    # than asserted, because ``python -O`` strips an assert and an integrity check
+    # that protects a published number must not vanish under an optimisation flag.
     missing, unexpected = model.load_state_dict(head_state, strict=False)
-    assert not unexpected, f"unexpected keys in model.safetensors: {unexpected}"
+    if unexpected:
+        raise ValueError(f"unexpected keys in model.safetensors: {unexpected}")
+    missing_head = [key for key in missing if not key.startswith("encoder.")]
+    if missing_head:
+        raise ValueError(
+            f"{path / 'model.safetensors'} is missing {len(missing_head)} non-encoder "
+            f"key(s), which would be served randomly initialised: {missing_head}"
+        )
     model.eval()  # a published checkpoint is for inference; dropout stays off until asked otherwise
 
     tok = AutoTokenizer.from_pretrained(str(path / "tokenizer"), local_files_only=True)

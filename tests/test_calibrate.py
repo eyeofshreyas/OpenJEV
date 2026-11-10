@@ -1,4 +1,6 @@
+import pytest
 import torch
+from safetensors.torch import load_file, save_file
 
 import openjev.train
 from openjev.encode import QTYPES
@@ -74,3 +76,20 @@ def test_saved_temperature_survives_the_round_trip(tiny_model, tok, tmp_path):
     save_checkpoint(tiny_model, tok, tmp_path)
     model2, _, _ = load_checkpoint(tmp_path)
     assert torch.allclose(model2.temperature, torch.tensor([1.5, 2.0, 0.8]))
+
+
+def test_a_checkpoint_missing_head_weights_is_refused(tiny_model, tok, tmp_path):
+    """A truncated model.safetensors must not load a randomly initialised head.
+
+    ``strict=False`` is there because every ``encoder.*`` key legitimately
+    lives in the encoder directory instead. Any *other* missing key means the
+    model serves confident garbage while calling itself a trained checkpoint.
+    """
+    save_checkpoint(tiny_model, tok, tmp_path)
+    state = load_file(str(tmp_path / "model.safetensors"))
+    truncated = {k: v for k, v in state.items() if not k.startswith("scorer.")}
+    assert len(truncated) < len(state), "the fixture dropped nothing"
+    save_file(truncated, str(tmp_path / "model.safetensors"))
+
+    with pytest.raises(ValueError, match="scorer"):
+        load_checkpoint(tmp_path)

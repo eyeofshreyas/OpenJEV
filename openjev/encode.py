@@ -209,9 +209,12 @@ def build_sequence(
     state_tokens_used = min(state_tokens, room)
 
     ids = head_ids + state_ids[:state_tokens_used] + [tok.sep_token_id]
-    assert len(ids) <= max_len, (
-        f"question {qid!r}: assembled sequence of {len(ids)} tokens exceeds max_len={max_len}"
-    )
+    # Raised, not asserted: ``python -O`` strips an assert, and a budget this
+    # check protects is what keeps a long state from silently eating the options.
+    if len(ids) > max_len:
+        raise ValueError(
+            f"question {qid!r}: assembled sequence of {len(ids)} tokens exceeds max_len={max_len}"
+        )
 
     return Encoded(
         ids=ids,
