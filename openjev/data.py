@@ -300,7 +300,7 @@ def items_from_csv(
 # project publishes benchmark numbers against this data, so a fetch has to name an
 # immutable commit rather than float with whatever the branch currently points at.
 _PARQUET_REVISIONS = {
-    "LocalLLaMA/typed-decisions": "4fb1c4cdac295cee9ba08ce686e04f2819cac540",
+    "LocalLLaMA/typed-decisions": "9529ecb7b0e283199a7889022761ede040d0e636",
     "AmazonScience/massive": "ed58ac423a2f4121720918bf5301577edce4ffd3",
     "google/boolq": "d89fc6ef4da46f056176dcf941ba670524ab1c87",
     "fancyzhx/ag_news": "4efd5262b756aee7a12710ca78c74aa258660063",
