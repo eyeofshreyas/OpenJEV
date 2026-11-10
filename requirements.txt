@@ -3,5 +3,6 @@
 torch>=2.2
 transformers>=5.0
 datasets
+safetensors  # openjev/train.py saves and loads checkpoints with it directly
 pytest
 numpy  # test-only: tests/test_eval.py builds its hand-computed fixtures with it
