@@ -21,9 +21,11 @@ import math
 import random
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 
 import torch
+from torch.utils.checkpoint import checkpoint
 from safetensors.torch import load_file, load_model, save_file, save_model
 from transformers import AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup
 
@@ -58,6 +60,10 @@ class TrainConfig:
     seed: int = 0
     grad_clip: float = 1.0
     calib_frac: float = 0.1
+    # Off by default: it buys memory with ~30% more compute, which a CPU
+    # development run and this project's tests have no use for. The spec's
+    # Kaggle recipe turns it on.
+    gradient_checkpointing: bool = False
 
 
 def autocast_dtype(device: torch.device) -> torch.dtype | None:
@@ -70,6 +76,28 @@ def autocast_dtype(device: torch.device) -> torch.dtype | None:
     if device.type != "cuda":
         return None
     return torch.bfloat16 if torch.cuda.get_device_capability(device)[0] >= 8 else torch.float16
+
+
+def enable_gradient_checkpointing(model) -> None:
+    """Trade compute for memory on the encoder and the head, as the spec's recipe asks.
+
+    Its ~12 GB/rank estimate depends on it: the specced ``micro_batch=8`` at
+    ``max_len=1024`` on ModernBERT-large does not otherwise fit a 16 GB T4.
+
+    ``nn.TransformerEncoder`` has no checkpointing of its own, so each head
+    layer's ``forward`` is wrapped instead — ``Module.__call__`` dispatches
+    through the instance attribute, so the wrap holds however the layer is
+    called. ``use_reentrant=False`` on both halves: the reentrant
+    implementation needs its inputs to require grad and silently yields no
+    gradient when they do not, and transformers warns when the choice is left
+    implicit. Idempotent, so a resumed run cannot wrap a layer twice.
+    """
+    model.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    for layer in model.head.layers:
+        if getattr(layer, "_openjev_checkpointed", False):
+            continue
+        layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
+        layer._openjev_checkpointed = True
 
 
 def tag_state(item: Item) -> Item:
@@ -304,6 +332,8 @@ def train(
         )
 
     torch.manual_seed(cfg.seed)
+    if cfg.gradient_checkpointing:
+        enable_gradient_checkpointing(model)
     device = next(model.parameters()).device
     dtype = autocast_dtype(device)
     scaler = torch.amp.GradScaler(device.type, enabled=dtype is torch.float16)

@@ -239,3 +239,22 @@ def test_report_hands_back_the_calibration_slice_itself(tiny_model, tok, tmp_pat
     # And it feeds the fitter directly, which is the whole point of returning it.
     _, notes = fit_temperatures(tiny_model, calib, tok, TrainConfig())
     assert notes["noul"]["fitted"] is True
+
+
+def test_gradient_checkpointing_still_trains(tok, tmp_path):
+    """The spec's Kaggle recipe runs with checkpointing on, so the loop has to work with it on.
+
+    Its ~12 GB/rank estimate assumes it: micro_batch=8 at max_len=1024 on
+    ModernBERT-large does not otherwise fit a 16 GB T4.
+    """
+    model = build_model(config=tiny_config(vocab_size=len(tok)))
+    before = model.scorer[-1].weight.clone()
+
+    report = train(_synthetic_items(n=8), model, tok, out_dir=tmp_path,
+                   cfg=TrainConfig(epochs=1, micro_batch=4, grad_accum=1,
+                                   gradient_checkpointing=True, **TINY_LR))
+
+    assert model.encoder.gradient_checkpointing is True
+    assert all(math.isfinite(x) for x in report["epoch_loss"])
+    # Gradients reached the head through the checkpointed graph, not just the encoder.
+    assert not torch.equal(model.scorer[-1].weight, before)
