@@ -1,12 +1,15 @@
 """The Agent API: typed questions about a state in, calibrated probabilities out.
 
 ``Agent.predict`` is the one function a caller needs. It answers every question
-about a single state in one forward pass: the state is validated and tokenized
+about a single state in one forward *call*: the state is validated and tokenized
 exactly once, spliced into each question's sequence, and the whole batch runs
-through the model together — so asking N questions costs one encoder forward,
-not N, and ``usage.forward_passes`` makes that claim checkable rather than
-asserted. ``usage.truncated`` surfaces whenever the state lost tokens to the
-head budget, since a caller has no other way to know it got a partial answer.
+through the model together, with no text generated anywhere. What that replaces
+is an autoregressive decode loop, not the encoder compute — N questions are N
+sequences, so they cost N sequences' worth of it, and ``usage`` reports both
+``forward_passes`` and the wall-clock ``ms`` so the per-decision cost stays
+visible rather than asserted. ``usage.truncated`` surfaces whenever the state
+lost tokens to the head budget, since a caller has no other way to know it got
+a partial answer.
 """
 
 import time
