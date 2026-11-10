@@ -141,7 +141,52 @@ def _batch(tok, items: list[Item], cfg: TrainConfig, rng: random.Random | None, 
     return batch, target
 
 
+def _pad_to(t: torch.Tensor, k: int, fill) -> torch.Tensor:
+    """Right-pad a ``(B, K_chunk)`` tensor out to ``K`` columns with ``fill``."""
+    if t.size(1) == k:
+        return t
+    out = t.new_full((t.size(0), k), fill)
+    out[:, : t.size(1)] = t
+    return out
+
+
 @torch.no_grad()
+def forward_items(model, tok, items: list[Item], cfg: TrainConfig, device):
+    """Forward ``items`` in ``cfg.micro_batch`` chunks; return CPU logits, targets and mask.
+
+    Chunked, and the results kept on the CPU, because the alternative is one
+    forward over every item at once: at the spec's data size that is thousands
+    of sequences padded to ``max_len`` through the encoder in a single call,
+    which on a real GPU is an out-of-memory crash. Both callers below want the
+    same pass, so they share this one instead of each having a batching policy.
+
+    Chunks disagree about ``K`` (the batch's largest option count), so every
+    chunk is padded out to the widest one, logits with the same ``-1e4`` the
+    model already fills masked slots with and targets with 0.
+    """
+    was_training = model.training
+    model.eval()
+    state_ids: dict[str, list[int]] = {}
+    chunks = []
+    try:
+        for i in range(0, len(items), cfg.micro_batch):
+            batch, target = _batch(tok, items[i : i + cfg.micro_batch], cfg, None, state_ids)
+            batch = {k: v.to(device) for k, v in batch.items()}
+            chunks.append((model(**batch).cpu(), target.cpu(), batch["marker_mask"].cpu()))
+    finally:
+        model.train(was_training)
+
+    if not chunks:
+        return torch.zeros(0, 0), torch.zeros(0, 0), torch.zeros(0, 0, dtype=torch.bool)
+
+    k = max(logits.size(1) for logits, _, _ in chunks)
+    return (
+        torch.cat([_pad_to(logits, k, -1e4) for logits, _, _ in chunks]),
+        torch.cat([_pad_to(target, k, 0.0) for _, target, _ in chunks]),
+        torch.cat([_pad_to(mask, k, False) for _, _, mask in chunks]),
+    )
+
+
 def accuracy(model, tok, items: list[Item], cfg: TrainConfig, device) -> float:
     """The share of ``items`` whose most likely option is the target's, in eval mode.
 
@@ -150,19 +195,8 @@ def accuracy(model, tok, items: list[Item], cfg: TrainConfig, device) -> float:
     low and jitters. The number the report states — the one that answers "did
     this run learn anything" — is worth one clean pass.
     """
-    was_training = model.training
-    model.eval()
-    state_ids: dict[str, list[int]] = {}
-    correct = 0
-    try:
-        for i in range(0, len(items), cfg.micro_batch):
-            batch, target = _batch(tok, items[i : i + cfg.micro_batch], cfg, None, state_ids)
-            batch = {k: v.to(device) for k, v in batch.items()}
-            logits = model(**batch)
-            correct += int((logits.argmax(-1).cpu() == target.argmax(-1)).sum())
-    finally:
-        model.train(was_training)
-    return correct / len(items)
+    logits, target, _ = forward_items(model, tok, items, cfg, device)
+    return int((logits.argmax(-1) == target.argmax(-1)).sum()) / len(items)
 
 
 def _type_nll(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, t) -> torch.Tensor:
@@ -207,8 +241,6 @@ def fit_temperatures(model, items: list[Item], tok, cfg: TrainConfig) -> tuple[l
     list (in ``QTYPES`` order) alongside a per-type note.
     """
     device = next(model.parameters()).device
-    was_training = model.training
-    model.eval()
 
     by_type: dict[str, list[Item]] = {name: [] for name in QTYPES}
     for item in items:
@@ -216,41 +248,32 @@ def fit_temperatures(model, items: list[Item], tok, cfg: TrainConfig) -> tuple[l
 
     temps = model.temperature.detach().clone().cpu()
     notes: dict[str, dict] = {}
-    state_ids: dict[str, list[int]] = {}
 
-    try:
-        for name, type_items in by_type.items():
-            idx = QTYPES[name]
-            if len(type_items) < MIN_CALIBRATION_ITEMS:
-                temps[idx] = 1.0
-                notes[name] = {
-                    "fitted": False,
-                    "n_items": len(type_items),
-                    "warning": f"only {len(type_items)} {name!r} items, need at least {MIN_CALIBRATION_ITEMS}",
-                }
-                continue
-
-            batch, target = _batch(tok, type_items, cfg, None, state_ids)
-            batch = {k: v.to(device) for k, v in batch.items()}
-            with torch.no_grad():
-                logits = model(**batch).cpu()
-            target = target.cpu()
-            mask = batch["marker_mask"].cpu()
-
-            nll_before = float(_type_nll(logits, target, mask, 1.0))
-            fitted_t = _fit_one_temperature(logits, target, mask)
-            nll_after = float(_type_nll(logits, target, mask, fitted_t))
-
-            temps[idx] = fitted_t
+    for name, type_items in by_type.items():
+        idx = QTYPES[name]
+        if len(type_items) < MIN_CALIBRATION_ITEMS:
+            temps[idx] = 1.0
             notes[name] = {
-                "fitted": True,
+                "fitted": False,
                 "n_items": len(type_items),
-                "temperature": fitted_t,
-                "nll_before": nll_before,
-                "nll_after": nll_after,
+                "warning": f"only {len(type_items)} {name!r} items, need at least {MIN_CALIBRATION_ITEMS}",
             }
-    finally:
-        model.train(was_training)
+            continue
+
+        logits, target, mask = forward_items(model, tok, type_items, cfg, device)
+
+        nll_before = float(_type_nll(logits, target, mask, 1.0))
+        fitted_t = _fit_one_temperature(logits, target, mask)
+        nll_after = float(_type_nll(logits, target, mask, fitted_t))
+
+        temps[idx] = fitted_t
+        notes[name] = {
+            "fitted": True,
+            "n_items": len(type_items),
+            "temperature": fitted_t,
+            "nll_before": nll_before,
+            "nll_after": nll_after,
+        }
 
     model.temperature.copy_(temps.to(model.temperature.device))
     return temps.tolist(), notes

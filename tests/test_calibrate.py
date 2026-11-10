@@ -1,5 +1,6 @@
 import torch
 
+import openjev.train
 from openjev.encode import QTYPES
 from openjev.train import TrainConfig, fit_temperatures, load_checkpoint, save_checkpoint
 
@@ -27,9 +28,30 @@ def test_temperature_never_changes_accuracy(tiny_model, tok):
 
 
 def test_too_few_items_leaves_temperature_unfitted(tiny_model, tok):
+    # The five items are ``noul``, so ``noul`` is the type that tests the
+    # 5 < MIN_CALIBRATION_ITEMS boundary; ``choice`` has no items at all here.
     temps, notes = fit_temperatures(tiny_model, _synthetic_items(n=5), tok, TrainConfig())
-    assert temps[QTYPES["choice"]] == 1.0
-    assert notes["choice"]["fitted"] is False
+    assert temps[QTYPES["noul"]] == 1.0
+    assert notes["noul"]["fitted"] is False
+    assert notes["noul"]["n_items"] == 5
+
+
+def test_calibration_forwards_in_micro_batches(tiny_model, tok, monkeypatch):
+    """A real calibration slice is thousands of sequences: one forward over all of them OOMs.
+
+    And it would OOM *after* training finished, before any publishable number
+    exists, since this is the only path that fits the temperature.
+    """
+    sizes = []
+    real = openjev.train._batch
+    monkeypatch.setattr(
+        openjev.train,
+        "_batch",
+        lambda tok_, items_, *rest: (sizes.append(len(items_)), real(tok_, items_, *rest))[1],
+    )
+    fit_temperatures(tiny_model, _synthetic_items(n=20), tok, TrainConfig(micro_batch=4))
+    assert sizes, "no batching happened at all"
+    assert max(sizes) <= 4
 
 
 def test_checkpoint_round_trip_preserves_logits(tiny_model, tok, tmp_path):
