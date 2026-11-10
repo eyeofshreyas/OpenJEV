@@ -17,6 +17,7 @@ from transformers import AutoTokenizer
 from openjev import encode
 from openjev.model import DEFAULT_BACKBONE, build_model
 from openjev.model import probabilities as compute_probabilities
+from openjev.model import sync
 from openjev.train import load_checkpoint
 
 
@@ -60,6 +61,7 @@ class Agent:
         self.tok = tok
 
     def predict(self, state, questions: dict) -> dict:
+        sync(self.device)  # see ``model.sync``: ``usage.ms`` has to measure work, not kernel launches
         start = time.perf_counter()
 
         state_text = encode.strip_mask(self.tok, encode.validate_state(state))
@@ -88,6 +90,7 @@ class Agent:
             row = probs[i, : len(labels)].tolist()
             answers[qid] = _answer(qid, q, labels, row)
 
+        sync(self.device)
         usage = {
             "forward_passes": forward_passes,
             "questions": len(qids),

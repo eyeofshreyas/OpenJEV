@@ -1,7 +1,7 @@
 import torch
 
 from openjev.encode import build_sequence, collate
-from openjev.model import probabilities
+from openjev.model import probabilities, sync
 from tests.conftest import _fake_batch
 
 
@@ -59,3 +59,20 @@ def test_identical_options_spread_is_measured(tiny_model, tok, capsys):
     spread = (logits.max() - logits.min()).item()
     print(f"identical-option logit spread: {spread:.3f}")
     assert spread >= 0.0  # recorded, not gated: laya measured 3.59 on a trained checkpoint
+
+
+def test_sync_waits_only_on_cuda(monkeypatch):
+    """Latency timing brackets a forward call, which on CUDA returns at kernel-launch time.
+
+    Without this the published latency figures would read roughly an order of
+    magnitude too fast on the one device the spec asks them to be measured on.
+    """
+    waited = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: waited.append(device))
+
+    sync(torch.device("cpu"))
+    assert waited == []
+
+    cuda = torch.device("cuda")
+    sync(cuda)
+    assert waited == [cuda]

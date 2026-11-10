@@ -22,6 +22,7 @@ import torch
 from openjev.data import items_from_cases
 from openjev.encode import HEAD_MAX_LEN, MAX_LEN, QTYPES, build_sequence, collate, render_options, strip_mask
 from openjev.model import probabilities as compute_probabilities
+from openjev.model import sync
 
 
 def ece(confidence, correct, bins: int = 15) -> float:
@@ -126,7 +127,8 @@ def evaluate(model, tok, cases, batch_size: int = 16) -> dict:
 
     Latency is reported two ways. ``latency_ms_median``/``latency_ms_p95``
     time one forward call (only the ``model(**batch)`` line — not encoding,
-    collating or softmax). That pool only ever holds full-size batches: a
+    collating or softmax), with the device synchronised on both edges so a
+    CUDA figure times the work rather than the kernel launch. That pool only ever holds full-size batches: a
     trailing partial batch is faster to run for the boring reason that it
     has fewer items in it, and letting it into the same percentile pool as
     full batches skews "how long does a call take" with a number that is
@@ -154,8 +156,10 @@ def evaluate(model, tok, cases, batch_size: int = 16) -> dict:
             batch, target_matrix = _batch_items(tok, chunk, state_ids_cache)
             batch = {k: v.to(device) for k, v in batch.items()}
 
+            sync(device)  # a CUDA forward returns at kernel-launch time; time the work, not the launch
             start = time.perf_counter()
             logits = model(**batch)
+            sync(device)
             call_latencies_ms.append((time.perf_counter() - start) * 1000.0)
             call_sizes.append(len(chunk))
 

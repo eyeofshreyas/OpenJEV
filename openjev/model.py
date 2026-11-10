@@ -77,6 +77,19 @@ def build_model(backbone: str | None = None, config=None, head_layers: int = 2) 
     return DecisionModel(encoder, head_layers=head_layers)
 
 
+def sync(device) -> None:
+    """Wait for ``device``'s queued work to finish. A no-op anywhere but CUDA.
+
+    A CUDA forward call returns as soon as the kernels are *launched*, so a
+    ``perf_counter()`` bracket around one measures the launch, not the work —
+    roughly an order of magnitude too fast, on the exact device the latency
+    table is supposed to be measured on. Every timed region in this project
+    calls this on both of its edges.
+    """
+    if torch.device(device).type == "cuda":
+        torch.cuda.synchronize(device)
+
+
 def probabilities(logits: torch.Tensor, marker_mask: torch.Tensor, qtype=None, temperature=None) -> torch.Tensor:
     """Softmax logits into a probability distribution over a question's real options.
 
