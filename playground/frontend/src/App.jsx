@@ -59,6 +59,19 @@ function Bar({ label, prob, isTop }) {
   );
 }
 
+function Panel({ step, title, children, footer }) {
+  return (
+    <section className="panel">
+      <div className="panel-bar">
+        <span className="panel-step">{step}</span>
+        <span className="panel-title">{title}</span>
+      </div>
+      <div className="panel-body">{children}</div>
+      {footer}
+    </section>
+  );
+}
+
 export default function App() {
   const [state, setState] = useState("");
   const [questions, setQuestions] = useState([]);
@@ -138,94 +151,104 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>openjev playground</h1>
+        <div className="brand">
+          <img src="/logo.svg" alt="" className="brand-mark" />
+          <div>
+            <div className="brand-name">openjev</div>
+            <div className="brand-caption">decision playground</div>
+          </div>
+        </div>
         {status && <div className={`caveat caveat-${status.mode}`}>{status.caveat}</div>}
       </header>
 
-      <section className="panel">
-        <label className="field-label">State</label>
-        <textarea value={state} onChange={(e) => setState(e.target.value)} rows={4} />
-        <button className="link-button" onClick={loadExample}>load example case</button>
-      </section>
+      <div className="workspace">
+        <Panel step="1" title="state">
+          <textarea value={state} onChange={(e) => setState(e.target.value)} rows={10} />
+          <button className="link-button" onClick={loadExample}>load example case</button>
+        </Panel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <label className="field-label">Questions</label>
-          <button onClick={addQuestion}>+ question</button>
-        </div>
-        {questions.map((q) => (
-          <div className="question-card" key={q.id}>
-            <div className="question-row">
+        <Panel
+          step="2"
+          title="questions"
+          footer={
+            <button className="ask-button" onClick={ask} disabled={loading || !state.trim()}>
+              {loading ? "asking..." : "ask → see the decision"}
+            </button>
+          }
+        >
+          <button className="add-question-button" onClick={addQuestion}>+ question</button>
+          {questions.map((q) => (
+            <div className="question-card" key={q.id}>
+              <div className="question-row">
+                <input
+                  className="qid-input"
+                  placeholder="question id"
+                  value={q.qid}
+                  onChange={(e) => updateQuestion(q.id, { qid: e.target.value })}
+                />
+                <select value={q.type} onChange={(e) => updateQuestion(q.id, { type: e.target.value })}>
+                  {TYPES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+                <button className="icon-button" onClick={() => removeQuestion(q.id)}>remove</button>
+              </div>
               <input
-                className="qid-input"
-                placeholder="question id"
-                value={q.qid}
-                onChange={(e) => updateQuestion(q.id, { qid: e.target.value })}
+                className="instructions-input"
+                placeholder="instructions"
+                value={q.instructions}
+                onChange={(e) => updateQuestion(q.id, { instructions: e.target.value })}
               />
-              <select value={q.type} onChange={(e) => updateQuestion(q.id, { type: e.target.value })}>
-                {TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-              <button className="icon-button" onClick={() => removeQuestion(q.id)}>remove</button>
+              {q.type !== "noul" && (
+                <div className="options-list">
+                  {q.options.map((o, idx) => (
+                    <div className="option-row" key={idx}>
+                      <input
+                        placeholder={q.type === "score" ? `level ${idx}` : "option"}
+                        value={o.key}
+                        onChange={(e) => updateOption(q.id, idx, { key: e.target.value })}
+                      />
+                      <input
+                        placeholder="description (optional)"
+                        value={o.description}
+                        onChange={(e) => updateOption(q.id, idx, { description: e.target.value })}
+                      />
+                      <button className="icon-button" onClick={() => removeOption(q.id, idx)}>x</button>
+                    </div>
+                  ))}
+                  <button className="link-button" onClick={() => addOption(q.id)}>+ option</button>
+                </div>
+              )}
             </div>
-            <input
-              className="instructions-input"
-              placeholder="instructions"
-              value={q.instructions}
-              onChange={(e) => updateQuestion(q.id, { instructions: e.target.value })}
-            />
-            {q.type !== "noul" && (
-              <div className="options-list">
-                {q.options.map((o, idx) => (
-                  <div className="option-row" key={idx}>
-                    <input
-                      placeholder={q.type === "score" ? `level ${idx}` : "option"}
-                      value={o.key}
-                      onChange={(e) => updateOption(q.id, idx, { key: e.target.value })}
-                    />
-                    <input
-                      placeholder="description (optional)"
-                      value={o.description}
-                      onChange={(e) => updateOption(q.id, idx, { description: e.target.value })}
-                    />
-                    <button className="icon-button" onClick={() => removeOption(q.id, idx)}>x</button>
+          ))}
+        </Panel>
+
+        <Panel step="3" title="decision">
+          {error && <div className="error">{error}</div>}
+          {!error && !result && <div className="empty-hint">ask to see typed answers here</div>}
+          {result && (
+            <>
+              <div className="usage">
+                {result.usage.forward_passes} forward pass &middot; {result.usage.questions} questions &middot;{" "}
+                {result.usage.ms.toFixed(0)}ms
+                {result.usage.truncated && <span className="truncated-badge">state truncated</span>}
+              </div>
+              {Object.entries(result.answers).map(([qid, answer]) => {
+                const probs = Object.entries(answer.probabilities).sort((a, b) => b[1] - a[1]);
+                const top = probs[0][0];
+                return (
+                  <div className="answer-card" key={qid}>
+                    <h3>{qid}</h3>
+                    {probs.map(([label, prob]) => (
+                      <Bar key={label} label={label} prob={prob} isTop={label === top} />
+                    ))}
                   </div>
-                ))}
-                <button className="link-button" onClick={() => addOption(q.id)}>+ option</button>
-              </div>
-            )}
-          </div>
-        ))}
-      </section>
-
-      <button className="ask-button" onClick={ask} disabled={loading || !state.trim()}>
-        {loading ? "asking..." : "ask"}
-      </button>
-
-      {error && <div className="error">{error}</div>}
-
-      {result && (
-        <section className="panel results">
-          <div className="usage">
-            {result.usage.forward_passes} forward pass · {result.usage.questions} questions ·{" "}
-            {result.usage.ms.toFixed(0)}ms
-            {result.usage.truncated && <span className="truncated-badge">state truncated</span>}
-          </div>
-          {Object.entries(result.answers).map(([qid, answer]) => {
-            const probs = Object.entries(answer.probabilities).sort((a, b) => b[1] - a[1]);
-            const top = probs[0][0];
-            return (
-              <div className="answer-card" key={qid}>
-                <h3>{qid}</h3>
-                {probs.map(([label, prob]) => (
-                  <Bar key={label} label={label} prob={prob} isTop={label === top} />
-                ))}
-              </div>
-            );
-          })}
-        </section>
-      )}
+                );
+              })}
+            </>
+          )}
+        </Panel>
+      </div>
     </div>
   );
 }
