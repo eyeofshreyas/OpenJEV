@@ -1,0 +1,115 @@
+"""The Agent API: typed questions about a state in, calibrated probabilities out.
+
+``Agent.predict`` is the one function a caller needs. It answers every question
+about a single state in one forward *call*: the state is validated and tokenized
+exactly once, spliced into each question's sequence, and the whole batch runs
+through the model together, with no text generated anywhere. What that replaces
+is an autoregressive decode loop, not the encoder compute — N questions are N
+sequences, so they cost N sequences' worth of it, and ``usage`` reports both
+``forward_passes`` and the wall-clock ``ms`` so the per-decision cost stays
+visible rather than asserted. ``usage.truncated`` surfaces whenever the state
+lost tokens to the head budget, since a caller has no other way to know it got
+a partial answer.
+"""
+
+import time
+
+import torch
+from transformers import AutoTokenizer
+
+from openjev import encode
+# The same list, under the name the data side uses for it: option keys in the
+# order ``render_options`` lays the markers out in. A second copy here is a copy
+# that can drift, and a drift would publish correct probabilities under the
+# wrong labels — the worst failure this project has.
+from openjev.data import _gold_keys as _labels
+from openjev.model import DEFAULT_BACKBONE, build_model
+from openjev.model import probabilities as compute_probabilities
+from openjev.model import sync
+from openjev.train import load_checkpoint
+
+
+def _answer(qid: str, q: dict, labels: list[str], probs: list[float]) -> dict:
+    answer = {"probabilities": dict(zip(labels, probs))}
+    top = max(range(len(probs)), key=probs.__getitem__)
+    answer["answer_confidence"] = probs[top]
+
+    if q["type"] == "choice":
+        answer["choice"] = labels[top]
+    elif q["type"] == "score":
+        answer["score"] = sum(i * p for i, p in enumerate(probs))
+    elif q["type"] == "noul":
+        answer["noul"] = probs[labels.index("true")]
+    return answer
+
+
+class Agent:
+    """Loads a decision model and answers typed questions about a state."""
+
+    def __init__(self, path: str | None = None, backbone: str | None = None, device=None):
+        self.device = torch.device(device) if device is not None else torch.device("cpu")
+        config = {}
+        if path is not None:
+            model, tok, config = load_checkpoint(path)
+        else:
+            tok = AutoTokenizer.from_pretrained(backbone or DEFAULT_BACKBONE)
+            model = build_model(backbone=backbone)
+        # Served at the budget the checkpoint was trained at. A run that moved
+        # ``head_max_len`` (the spec does, for MASSIVE's 60 labels) and was then
+        # served at the module default would answer from a sequence shape the
+        # weights never saw.
+        self.max_len = config.get("max_len", encode.MAX_LEN)
+        self.head_max_len = config.get("head_max_len", encode.HEAD_MAX_LEN)
+        self.model = model.to(self.device).eval()
+        self.tok = tok
+
+    def predict(self, state, questions: dict) -> dict:
+        sync(self.device)  # see ``model.sync``: ``usage.ms`` has to measure work, not kernel launches
+        start = time.perf_counter()
+
+        state_text = encode.strip_mask(self.tok, encode.validate_state(state))
+        state_ids = self.tok(state_text, add_special_tokens=False)["input_ids"]
+
+        qids = list(questions)
+        encoded = [
+            encode.build_sequence(self.tok, state, questions[qid], qid=qid, state_ids=state_ids,
+                                  max_len=self.max_len, head_max_len=self.head_max_len)
+            for qid in qids
+        ]
+        batch = encode.collate(encoded, self.tok.pad_token_id)
+        batch = {k: v.to(self.device) for k, v in batch.items()}
+
+        forward_passes = 0
+        with torch.inference_mode():
+            logits = self.model(**batch)
+            forward_passes += 1
+            probs = compute_probabilities(
+                logits, batch["marker_mask"], qtype=batch["qtype"], temperature=self.model.temperature
+            )
+
+        answers = {}
+        for i, qid in enumerate(qids):
+            q = questions[qid]
+            labels = _labels(q)
+            row = probs[i, : len(labels)].tolist()
+            answers[qid] = _answer(qid, q, labels, row)
+
+        sync(self.device)
+        usage = {
+            "forward_passes": forward_passes,
+            "questions": len(qids),
+            "ms": (time.perf_counter() - start) * 1000.0,
+            "truncated": any(e.truncated for e in encoded),
+            "state_tokens": encoded[0].state_tokens,
+            # Per-question head length varies (instructions/options differ), so the
+            # room left for the shared state can too. Report the tightest budget any
+            # question actually got, so "truncated" and "state_tokens_used" never
+            # contradict each other.
+            "state_tokens_used": min(e.state_tokens_used for e in encoded),
+        }
+        return {"answers": answers, "usage": usage}
+
+
+def load(path, device=None) -> Agent:
+    """Load a published checkpoint into an ``Agent``, ready to ``predict``."""
+    return Agent(path=path, device=device)

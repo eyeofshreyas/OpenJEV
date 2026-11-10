@@ -15,9 +15,14 @@ CONTEXT = (
 )
 
 SCHEMA = {
-    "priority": {"type": "enum", "description": "Incident priority", "choices": ["HIGH", "LOW"]},
+    "priority": {"type": "enum", "description": "Incident priority", "choices": ["HIGH", "LOW"],
+                 "descriptions": {"HIGH": "needs action within the hour",
+                                   "LOW": "can wait for the normal review queue"}},
     "decision": {"type": "enum", "description": "Case decision",
-                 "choices": ["FRAUD", "FRAUD_REVIEW", "CLEAR"]},
+                 "choices": ["FRAUD", "FRAUD_REVIEW", "CLEAR"],
+                 "descriptions": {"FRAUD": "confirmed fraudulent activity, block the card",
+                                   "FRAUD_REVIEW": "suspicious, needs a human to look",
+                                   "CLEAR": "legitimate activity, no action needed"}},
     "escalate": {"type": "boolean", "description": "Whether escalation is required"},
 }
 
@@ -66,8 +71,22 @@ def naive_prompt(tok, context, schema):
 
 
 def parallel_prompt(tok, context, schema):
-    catalog = "\n".join(f'  "{n}": {f["description"]}' for n, f in schema.items())
-    return chat(tok, "Classify JSON attributes:\n" + catalog, context, "{\n")
+    """A field per line, plus one indented line per option that has a description.
+
+    Our model's choice questions put each option's criteria text into the sequence
+    (see ``openjev.encode.render_options``); a baseline that never sees that text is
+    judged against information it was not given. A field with no ``descriptions``
+    renders exactly as before - that case isn't optional, it's what the existing
+    callers (``1_vanilla_decoding.py``, the tests on ``common.SCHEMA``) depend on.
+    """
+    lines = []
+    for n, f in schema.items():
+        lines.append(f'  "{n}": {f["description"]}')
+        descriptions = f.get("descriptions") or {}
+        for choice in choices_of(f):
+            if choice in descriptions:
+                lines.append(f'    {choice}: {descriptions[choice]}')
+    return chat(tok, "Classify JSON attributes:\n" + "\n".join(lines), context, "{\n")
 
 
 def compile_field(tok, name, field):
@@ -175,6 +194,7 @@ def tree_scores(tok, model, context, schema, trie=None):
     inputs = tok(parallel_prompt(tok, context, schema), add_special_tokens=False,
                  return_tensors="pt").to(model.device)
     out = model(**inputs, use_cache=True)
+    forward_passes = 1
     cache, P, N = out.past_key_values, inputs.input_ids.shape[1], len(trie.nodes)
 
     s, e = torch.tensor(trie.starts), torch.tensor(trie.ends)
@@ -186,13 +206,15 @@ def tree_scores(tok, model, context, schema, trie=None):
 
     out = model(input_ids=torch.tensor([trie.nodes], device=model.device), attention_mask=mask,
                 position_ids=positions, past_key_values=cache, use_cache=True)
+    forward_passes += 1
     logprobs = out.logits[0].float().log_softmax(-1)
     edges = logprobs[torch.tensor(trie.score_nodes, device=model.device),
                      torch.tensor(trie.score_tokens, device=model.device)]
     scores = torch.zeros(len(trie.lengths), device=model.device).scatter_add_(
         0, torch.tensor(trie.score_cand, device=model.device), edges)
     scores = scores / torch.tensor(trie.lengths, dtype=torch.float, device=model.device)
-    return SimpleNamespace(scores=scores, trie=trie, prefix_len=P, visible=visible)
+    return SimpleNamespace(scores=scores, trie=trie, prefix_len=P, visible=visible,
+                           forward_passes=forward_passes)
 
 
 def decide(tok, model, context, schema, temperature=1.0, trie=None):
@@ -205,7 +227,7 @@ def decide(tok, model, context, schema, temperature=1.0, trie=None):
                                         scores=result.scores[offset:offset + count].tolist())
         offset += count
     return SimpleNamespace(answers=answers, prefix_len=result.prefix_len,
-                           nodes=len(result.trie.nodes))
+                           nodes=len(result.trie.nodes), forward_passes=result.forward_passes)
 
 
 def pack(tok, state, questions):
