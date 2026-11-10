@@ -284,8 +284,9 @@ def train(
 ) -> dict:
     """Fine-tune ``model`` on ``items`` and return a report on the run.
 
-    The calibration set is held out first, and a run with nothing left to
-    train on is refused: a loader whose rows were all rejected must not report
+    The calibration set is held out first and comes back in the report as
+    ``calibration_set``, ready to hand straight to ``fit_temperatures``. A run
+    with nothing left to train on is refused: a loader whose rows were all rejected must not report
     success with a large skip count and a training set of zero.
 
     ``resume=True`` picks a crashed run back up from ``out_dir/checkpoint_latest``
@@ -411,6 +412,11 @@ def train(
     return {
         "train_items": len(train_items),
         "calibration_items": len(calib_items),
+        # The held-out items themselves, not just their count: the temperature
+        # has to be fitted on this exact slice, and a caller that re-derived it
+        # by calling ``split_items`` again with the same seed would be trusting
+        # that nothing about the split drifted in between.
+        "calibration_set": calib_items,
         "skipped": dict(skipped or {}),
         "optimizer_updates": updates,
         "epoch_loss": epoch_loss,

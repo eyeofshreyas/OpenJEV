@@ -19,8 +19,8 @@ import time
 
 import torch
 
-from openjev.data import target_vector
-from openjev.encode import QTYPES, build_sequence, collate, render_options, strip_mask
+from openjev.data import items_from_cases
+from openjev.encode import HEAD_MAX_LEN, MAX_LEN, QTYPES, build_sequence, collate, render_options, strip_mask
 from openjev.model import probabilities as compute_probabilities
 
 
@@ -71,27 +71,33 @@ def random_baseline(cases) -> float:
 
 
 def _cases_to_items(cases):
-    """Flatten cases into ``(state, qid, question, target)`` tuples, one per question asked."""
-    items = []
-    for case in cases:
-        state = case["state"]
-        questions = case["questions"]
-        expected = case.get("expected") or {}
-        gold = case.get("gold") or {}
-        for qid, question in questions.items():
-            target = target_vector(question, expected=expected.get(qid), gold=gold.get(qid))
-            items.append((state, qid, question, target))
-    return items
+    """Flatten cases into ``Item``s, one per question asked, targeted at the *truth*.
+
+    ``smoothing=0.0``: label smoothing is a training device, and a smoothed
+    eval target gives Brier a non-zero floor (0.015 for a perfectly right and
+    perfectly confident 3-option prediction) that rewards underconfidence and
+    is not comparable to any published Brier. Accuracy and ECE go through
+    argmax and correctness, so neither is affected either way.
+
+    ``items_from_cases`` is the one case-to-``Item`` converter, shared with
+    the JSONL reader, so it also means a malformed case is skipped and counted
+    here rather than raising mid-evaluation.
+    """
+    return items_from_cases(cases, smoothing=0.0)
 
 
-def _batch_items(tok, chunk, state_ids_cache):
-    """Encode and collate one chunk of ``(state, qid, question, target)`` tuples."""
+def _batch_items(tok, chunk, state_ids_cache, max_len=MAX_LEN, head_max_len=HEAD_MAX_LEN):
+    """Encode and collate one chunk of ``Item``s."""
     encoded, targets = [], []
-    for state, qid, question, target in chunk:
+    for item in chunk:
+        state, qid, question, target = item.state, item.qid, item.question, item.target
         ids = state_ids_cache.get(state)
         if ids is None:
             ids = state_ids_cache[state] = tok(strip_mask(tok, state), add_special_tokens=False)["input_ids"]
-        encoded.append(build_sequence(tok, state, question, qid=qid, state_ids=ids))
+        encoded.append(
+            build_sequence(tok, state, question, qid=qid, max_len=max_len,
+                           head_max_len=head_max_len, state_ids=ids)
+        )
         targets.append(target)
 
     batch = collate(encoded, tok.pad_token_id)
@@ -132,7 +138,7 @@ def evaluate(model, tok, cases, batch_size: int = 16) -> dict:
     partial batch — so "time per decision" stays honest regardless of which
     batch happened to be shorter.
     """
-    items = _cases_to_items(cases)
+    items, skipped = _cases_to_items(cases)
     device = next(model.parameters()).device
     was_training = model.training
     model.eval()
@@ -213,5 +219,6 @@ def evaluate(model, tok, cases, batch_size: int = 16) -> dict:
         "latency_ms_per_decision_median": per_decision_median,
         "latency_ms_per_decision_p95": per_decision_p95,
         "random_baseline": random_baseline(cases),
+        "skipped": dict(skipped),
         "n": n,
     }

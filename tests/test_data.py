@@ -1,6 +1,6 @@
 import json
 
-from openjev.data import items_from_jsonl, items_from_csv, update_budget, split_items
+from openjev.data import items_from_cases, items_from_jsonl, items_from_csv, update_budget, split_items
 
 
 def test_jsonl_reads_both_label_shapes():
@@ -120,3 +120,25 @@ def test_jsonl_accepts_a_string_noul_answer(tmp_path):
     items, skipped = items_from_jsonl(str(p))
     assert len(items) == 1
     assert not skipped
+
+
+def test_items_from_cases_needs_no_round_trip_through_a_file():
+    """Calibrating on ``load_typed_decisions("train")`` must not mean writing JSONL back out.
+
+    The loaders produce cases in memory; the fitter wants ``Item``s. Both
+    readers share one implementation, so this pins them to the same answer.
+    """
+    with open("tests/fixtures/cases.jsonl", encoding="utf-8-sig") as f:
+        cases = [json.loads(line) for line in f if line.strip()]
+
+    from_cases, skipped_cases = items_from_cases(cases)
+    from_file, skipped_file = items_from_jsonl("tests/fixtures/cases.jsonl")
+
+    assert [(i.state, i.qid, i.target) for i in from_cases] == [(i.state, i.qid, i.target) for i in from_file]
+    assert skipped_cases == skipped_file
+
+
+def test_items_from_cases_skips_malformed_cases_instead_of_raising():
+    items, skipped = items_from_cases([7, {"state": "s", "questions": {"q": None}}])
+    assert items == []
+    assert skipped["invalid_question"] == 2

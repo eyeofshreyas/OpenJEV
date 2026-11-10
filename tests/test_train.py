@@ -13,6 +13,7 @@ from openjev.train import (
     TrainConfig,
     _batch,
     autocast_dtype,
+    fit_temperatures,
     load_checkpoint,
     save_checkpoint,
     shuffle_options,
@@ -224,3 +225,17 @@ def test_shuffle_options_leaves_score_levels_alone(tok):
     shuffled, target = shuffle_options(item, random.Random(3))
     assert list(shuffled.question["criteria"]) == list(SCORE["criteria"])
     assert target == item.target
+
+
+def test_report_hands_back_the_calibration_slice_itself(tiny_model, tok, tmp_path):
+    """The fitter needs this exact slice; re-deriving it from the seed is drift waiting to happen."""
+    items = _synthetic_items(n=40)
+    report = train(items, tiny_model, tok, out_dir=tmp_path,
+                   cfg=TrainConfig(epochs=1, micro_batch=4, calib_frac=0.25))
+
+    calib = report["calibration_set"]
+    assert len(calib) == report["calibration_items"] == 10
+    assert all(any(c is i for i in items) for c in calib), "not the held-out items themselves"
+    # And it feeds the fitter directly, which is the whole point of returning it.
+    _, notes = fit_temperatures(tiny_model, calib, tok, TrainConfig())
+    assert notes["noul"]["fitted"] is True

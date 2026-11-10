@@ -1,6 +1,10 @@
+import copy
+
 import numpy as np
 import pytest
+import torch
 
+from openjev.encode import build_sequence, collate
 from openjev.eval import brier, ece, evaluate, random_baseline
 
 from tests.conftest import CHOICE, NOUL, _score_cases, _synthetic_cases
@@ -75,3 +79,31 @@ def test_brier_of_no_predictions_is_zero():
 
 def test_random_baseline_of_no_cases_is_zero():
     assert random_baseline([]) == 0.0
+
+
+def test_a_perfectly_confident_correct_prediction_scores_brier_zero(tiny_model, tok):
+    """Brier's floor has to be zero, which means the eval target is the truth.
+
+    Label smoothing is a *training* device. Scored against a target smoothed
+    at 0.1, a perfectly right and perfectly confident 3-option prediction
+    scores 0.015 instead of 0 — a metric with a non-zero floor that rewards
+    underconfidence and is comparable to no published Brier anywhere.
+    """
+    model = copy.deepcopy(tiny_model)
+    with torch.no_grad():  # confident by construction, so the target is the only thing left to measure
+        model.scorer[-1].weight *= 1e9
+        model.scorer[-1].bias *= 1e9
+
+    states = [f"case {i}: filler text" for i in range(12)]
+    batch = collate([build_sequence(tok, s, CHOICE, qid="d") for s in states], tok.pad_token_id)
+    with torch.no_grad():
+        top = model(**batch).argmax(-1).tolist()
+
+    labels = list(CHOICE["criteria"])
+    # Each case is labelled with the answer the model actually gives it: right
+    # every time and confident every time, so Brier can only read the target.
+    cases = [{"state": s, "questions": {"d": CHOICE}, "expected": {"d": labels[t]}} for s, t in zip(states, top)]
+
+    report = evaluate(model, tok, cases)
+    assert report["accuracy"] == 1.0
+    assert report["brier"] == pytest.approx(0.0, abs=1e-6)

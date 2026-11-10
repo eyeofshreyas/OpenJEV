@@ -161,18 +161,77 @@ def _build_item(state, qid, question, expected, gold, smoothing, skipped: Counte
     return Item(state=text, qid=qid, question=question, target=target)
 
 
+def items_from_cases(cases, smoothing: float = SMOOTHING) -> tuple[list[Item], Counter]:
+    """Turn in-memory cases into ``Item``s, one per (case, question).
+
+    A case is ``{"state": ..., "questions": {qid: question, ...},
+    "expected"|"gold": {qid: answer, ...}}`` — the shape every public loader in
+    this module emits (``load_typed_decisions``, ``load_massive``,
+    ``load_boolq``, ``load_ag_news``) and the shape ``items_from_jsonl`` reads
+    off disk. This is where that conversion lives, so calibrating or
+    evaluating on a loader's output needs no round trip through a file, and so
+    the file reader and the in-memory reader can never disagree about which
+    rows are valid.
+
+    Nothing here raises: every malformed shape is counted by reason and the
+    rest of the data is still read.
+    """
+    items: list[Item] = []
+    skipped: Counter = Counter()
+
+    for case in cases:
+        if not isinstance(case, dict):
+            skipped["invalid_question"] += 1
+            continue
+
+        state = case.get("state")
+        questions = case.get("questions", {})
+        if not isinstance(questions, dict):
+            skipped["invalid_question"] += 1
+            continue
+
+        expected_raw = case.get("expected")
+        gold_raw = case.get("gold")
+        # "expected"/"gold" are each optional, but if present must be a
+        # qid -> answer dict; a present-but-wrong-shaped one invalidates
+        # every question in the case, each counted individually below.
+        answers_malformed = (expected_raw is not None and not isinstance(expected_raw, dict)) or (
+            gold_raw is not None and not isinstance(gold_raw, dict)
+        )
+        expected_map = expected_raw if isinstance(expected_raw, dict) else {}
+        gold_map = gold_raw if isinstance(gold_raw, dict) else {}
+
+        for qid, question in questions.items():
+            if not isinstance(question, dict):
+                skipped["invalid_question"] += 1
+                continue
+            if answers_malformed:
+                skipped["invalid_question"] += 1
+                continue
+            item = _build_item(
+                state,
+                qid,
+                question,
+                expected_map.get(qid),
+                gold_map.get(qid),
+                smoothing,
+                skipped,
+            )
+            if item is not None:
+                items.append(item)
+
+    return items, skipped
+
+
 def items_from_jsonl(path, smoothing: float = SMOOTHING) -> tuple[list[Item], Counter]:
     """Read labelled decisions from a JSON-lines file of cases.
 
-    Each line is a case: ``{"state": ..., "questions": {qid: question, ...},
-    "expected"|"gold": {qid: answer, ...}}`` — the same case shape the public
-    loaders in this module produce (``load_typed_decisions``, ``load_massive``,
-    ``load_boolq``, ``load_ag_news``), so a case from any of them reads here
-    unchanged. One ``Item`` is produced per (case, question). A malformed
-    line never raises past this function — it is counted under
+    Each line is one case in ``items_from_cases``' shape, which does the
+    actual conversion; this function only turns the file into cases. A line
+    that is not JSON at all never raises past here — it is counted under
     ``invalid_question`` and reading continues.
     """
-    items: list[Item] = []
+    cases = []
     skipped: Counter = Counter()
 
     with open(path, encoding="utf-8-sig") as f:
@@ -181,52 +240,12 @@ def items_from_jsonl(path, smoothing: float = SMOOTHING) -> tuple[list[Item], Co
             if not line:
                 continue
             try:
-                case = json.loads(line)
+                cases.append(json.loads(line))
             except json.JSONDecodeError:
                 skipped["invalid_question"] += 1
-                continue
 
-            if not isinstance(case, dict):
-                skipped["invalid_question"] += 1
-                continue
-
-            state = case.get("state")
-            questions = case.get("questions", {})
-            if not isinstance(questions, dict):
-                skipped["invalid_question"] += 1
-                continue
-
-            expected_raw = case.get("expected")
-            gold_raw = case.get("gold")
-            # "expected"/"gold" are each optional, but if present must be a
-            # qid -> answer dict; a present-but-wrong-shaped one invalidates
-            # every question in the case, each counted individually below.
-            answers_malformed = (expected_raw is not None and not isinstance(expected_raw, dict)) or (
-                gold_raw is not None and not isinstance(gold_raw, dict)
-            )
-            expected_map = expected_raw if isinstance(expected_raw, dict) else {}
-            gold_map = gold_raw if isinstance(gold_raw, dict) else {}
-
-            for qid, question in questions.items():
-                if not isinstance(question, dict):
-                    skipped["invalid_question"] += 1
-                    continue
-                if answers_malformed:
-                    skipped["invalid_question"] += 1
-                    continue
-                item = _build_item(
-                    state,
-                    qid,
-                    question,
-                    expected_map.get(qid),
-                    gold_map.get(qid),
-                    smoothing,
-                    skipped,
-                )
-                if item is not None:
-                    items.append(item)
-
-    return items, skipped
+    items, case_skipped = items_from_cases(cases, smoothing)
+    return items, skipped + case_skipped
 
 
 def items_from_csv(
