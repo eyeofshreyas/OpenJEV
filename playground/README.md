@@ -7,9 +7,22 @@ probability bars come back from one forward call.
 ## Run it
 
 ```bash
+./playground/start.sh
+```
+
+Starts the backend (`TINY=1` by default) and the frontend together, and
+stops the backend when you Ctrl-C the frontend. Drop `TINY=1` for the real
+backbone, or set `OPENJEV_CHECKPOINT=/path/to/checkpoint` once one exists:
+
+```bash
+TINY= OPENJEV_CHECKPOINT=/path/to/checkpoint ./playground/start.sh
+```
+
+Or run each half yourself:
+
+```bash
 # backend (from the repo root, with the project's .venv active)
 TINY=1 uvicorn playground.backend.app:app --port 8001   # --reload for dev
-# drop TINY=1 for the real backbone, or set OPENJEV_CHECKPOINT=/path/to/checkpoint
 
 # frontend
 cd playground/frontend
