@@ -25,8 +25,8 @@ from functools import partial
 from pathlib import Path
 
 import torch
-from torch.utils.checkpoint import checkpoint
 from safetensors.torch import load_file, load_model, save_file, save_model
+from torch.utils.checkpoint import checkpoint
 from transformers import AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup
 
 from openjev.data import Item, _gold_keys, split_items, update_budget
@@ -179,7 +179,7 @@ def _pad_to(t: torch.Tensor, k: int, fill) -> torch.Tensor:
 
 
 @torch.no_grad()
-def forward_items(model, tok, items: list[Item], cfg: TrainConfig, device):
+def _forward_items(model, tok, items: list[Item], cfg: TrainConfig, device):
     """Forward ``items`` in ``cfg.micro_batch`` chunks; return CPU logits, targets and mask.
 
     Chunked, and the results kept on the CPU, because the alternative is one
@@ -223,7 +223,7 @@ def accuracy(model, tok, items: list[Item], cfg: TrainConfig, device) -> float:
     low and jitters. The number the report states — the one that answers "did
     this run learn anything" — is worth one clean pass.
     """
-    logits, target, _ = forward_items(model, tok, items, cfg, device)
+    logits, target, _ = _forward_items(model, tok, items, cfg, device)
     return int((logits.argmax(-1) == target.argmax(-1)).sum()) / len(items)
 
 
@@ -288,7 +288,7 @@ def fit_temperatures(model, items: list[Item], tok, cfg: TrainConfig) -> tuple[l
             }
             continue
 
-        logits, target, mask = forward_items(model, tok, type_items, cfg, device)
+        logits, target, mask = _forward_items(model, tok, type_items, cfg, device)
 
         nll_before = float(_type_nll(logits, target, mask, 1.0))
         fitted_t = _fit_one_temperature(logits, target, mask)
@@ -314,8 +314,9 @@ def train(
 
     The calibration set is held out first and comes back in the report as
     ``calibration_set``, ready to hand straight to ``fit_temperatures``. A run
-    with nothing left to train on is refused: a loader whose rows were all rejected must not report
-    success with a large skip count and a training set of zero.
+    with nothing left to train on is refused: a loader whose rows were all
+    rejected must not report success with a large skip count and a training
+    set of zero.
 
     ``resume=True`` picks a crashed run back up from ``out_dir/checkpoint_latest``
     at the epoch after the last one it finished, with the schedule, the Adam
@@ -475,8 +476,8 @@ def save_checkpoint(model, *args, state: dict | None = None, name: str = "checkp
     ``out_dir/model.safetensors``, and a reference-implementation-compatible
     ``rl_agent_config.json`` (backbone id, the ``max_len``/``head_max_len``
     the run used — pass the run's ``cfg`` — ``head_layers``, temperatures, and
-    whatever notes ``config`` adds) beside it. ``questions``, if given, is written to ``questions.json``. This shape
-    also accepts ``state``, so the same out_dir can carry both a rolling
+    whatever notes the ``config`` dict adds) beside it. ``questions``, if
+    given, is written to ``questions.json``. This shape also accepts ``state``, so the same out_dir can carry both a rolling
     ``checkpoint_latest`` child (resume shape) and this publishable parent.
 
     Returns ``None`` for the publishable shape, the checkpoint directory

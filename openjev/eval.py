@@ -72,13 +72,14 @@ def random_baseline(cases) -> float:
 
 
 def _cases_to_items(cases):
-    """Flatten cases into ``Item``s, one per question asked, targeted at the *truth*.
+    """Flatten cases into ``Item``s and a skip count, one item per question asked.
 
-    ``smoothing=0.0``: label smoothing is a training device, and a smoothed
-    eval target gives Brier a non-zero floor (0.015 for a perfectly right and
-    perfectly confident 3-option prediction) that rewards underconfidence and
-    is not comparable to any published Brier. Accuracy and ECE go through
-    argmax and correctness, so neither is affected either way.
+    Targeted at the *truth*: ``smoothing=0.0``, because label smoothing is a
+    training device, and a smoothed eval target gives Brier a non-zero floor
+    (0.015 for a perfectly right and perfectly confident 3-option prediction)
+    that rewards underconfidence and is comparable to no published Brier
+    anywhere. Accuracy and ECE both go through argmax and correctness, so
+    neither is affected either way.
 
     ``items_from_cases`` is the one case-to-``Item`` converter, shared with
     the JSONL reader, so it also means a malformed case is skipped and counted
@@ -129,11 +130,11 @@ def evaluate(model, tok, cases, batch_size: int = 16, max_len: int = MAX_LEN,
     Latency is reported two ways. ``latency_ms_median``/``latency_ms_p95``
     time one forward call (only the ``model(**batch)`` line — not encoding,
     collating or softmax), with the device synchronised on both edges so a
-    CUDA figure times the work rather than the kernel launch. That pool only ever holds full-size batches: a
-    trailing partial batch is faster to run for the boring reason that it
-    has fewer items in it, and letting it into the same percentile pool as
-    full batches skews "how long does a call take" with a number that is
-    really about batch size. (If every call this run made was partial — e.g.
+    CUDA figure times the work rather than the kernel launch. That pool only
+    ever holds full-size batches: a trailing partial batch is faster to run
+    for the boring reason that it has fewer items in it, and letting it into
+    the same percentile pool as full batches skews "how long does a call take"
+    with a number that is really about batch size. (If every call this run made was partial — e.g.
     ``len(cases) < batch_size`` — the pool falls back to every call, since
     there is nothing homogeneous to exclude it in favour of.)
     ``latency_ms_per_decision_median``/``latency_ms_per_decision_p95`` instead

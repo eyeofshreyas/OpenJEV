@@ -28,6 +28,7 @@ from transformers import AutoTokenizer
 
 import common
 import openjev
+import openjev.encode
 from openjev.model import DEFAULT_BACKBONE, build_model, tiny_config
 
 
@@ -83,6 +84,9 @@ def build_agent(tiny, checkpoint_path):
         model = build_model(config=tiny_config(vocab_size=len(tok))).eval()
         agent = openjev.Agent.__new__(openjev.Agent)
         agent.tok, agent.model, agent.device = tok, model, torch.device("cpu")
+        # ``__init__`` reads these off the checkpoint's config; there is no
+        # checkpoint on this path, so the module budgets stand in for it.
+        agent.max_len, agent.head_max_len = openjev.encode.MAX_LEN, openjev.encode.HEAD_MAX_LEN
         return agent, SimpleNamespace(kind="tiny")
     if checkpoint_path is not None:
         return openjev.load(checkpoint_path), SimpleNamespace(kind="checkpoint", path=checkpoint_path)
