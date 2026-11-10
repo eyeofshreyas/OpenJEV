@@ -491,7 +491,9 @@ def load_checkpoint(*args, optimizer=None, scheduler=None, scaler=None, name="ch
     path = Path(args[0])
     rl_agent_config = json.loads((path / "rl_agent_config.json").read_text())
 
-    encoder = AutoModel.from_pretrained(str(path / "encoder"))
+    # local_files_only: a caller-supplied path that doesn't resolve to a real checkpoint directory
+    # must fail loudly, not be reinterpreted as a Hub repo id and trigger a network download.
+    encoder = AutoModel.from_pretrained(str(path / "encoder"), local_files_only=True)
     model = DecisionModel(encoder, head_layers=rl_agent_config.get("head_layers", 2))
 
     head_state = load_file(str(path / "model.safetensors"))
@@ -499,5 +501,5 @@ def load_checkpoint(*args, optimizer=None, scheduler=None, scaler=None, name="ch
     assert not unexpected, f"unexpected keys in model.safetensors: {unexpected}"
     model.eval()  # a published checkpoint is for inference; dropout stays off until asked otherwise
 
-    tok = AutoTokenizer.from_pretrained(str(path / "tokenizer"))
+    tok = AutoTokenizer.from_pretrained(str(path / "tokenizer"), local_files_only=True)
     return model, tok, rl_agent_config
