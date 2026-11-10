@@ -426,7 +426,8 @@ def train(
 
 
 def save_checkpoint(model, *args, state: dict | None = None, name: str = "checkpoint_latest",
-                     questions: dict | None = None, config: dict | None = None):
+                     questions: dict | None = None, config: dict | None = None,
+                     cfg: TrainConfig | None = None):
     """Write a checkpoint. Two call shapes share this one pair of functions.
 
     ``save_checkpoint(model, out_dir, state=...)`` is the *resume* shape this
@@ -442,9 +443,9 @@ def save_checkpoint(model, *args, state: dict | None = None, name: str = "checkp
     ``save_pretrained``, the tokenizer to ``out_dir/tokenizer``, everything
     else (head, scorer, type embedding, the ``temperature`` buffer) to
     ``out_dir/model.safetensors``, and a reference-implementation-compatible
-    ``rl_agent_config.json`` (backbone id, ``max_len``, ``head_max_len``,
-    ``head_layers``, temperatures, and whatever notes ``config`` adds) beside
-    it. ``questions``, if given, is written to ``questions.json``. This shape
+    ``rl_agent_config.json`` (backbone id, the ``max_len``/``head_max_len``
+    the run used — pass the run's ``cfg`` — ``head_layers``, temperatures, and
+    whatever notes ``config`` adds) beside it. ``questions``, if given, is written to ``questions.json``. This shape
     also accepts ``state``, so the same out_dir can carry both a rolling
     ``checkpoint_latest`` child (resume shape) and this publishable parent.
 
@@ -471,10 +472,15 @@ def save_checkpoint(model, *args, state: dict | None = None, name: str = "checkp
                   if not k.startswith("encoder.")}
     save_file(head_state, str(path / "model.safetensors"))
 
+    # The budget the weights were actually trained at, not the module defaults:
+    # ``TrainConfig.max_len``/``head_max_len`` are real knobs (the spec reaches for
+    # head_max_len=512 for MASSIVE's 60 labels), and whatever lands here is what
+    # the checkpoint is later *served* at.
+    budget = cfg or TrainConfig()
     rl_agent_config = {
         "backbone": getattr(model.encoder.config, "name_or_path", "") or None,
-        "max_len": MAX_LEN,
-        "head_max_len": HEAD_MAX_LEN,
+        "max_len": budget.max_len,
+        "head_max_len": budget.head_max_len,
         "head_layers": len(model.head.layers),
         "temperature": model.temperature.tolist(),
         **(config or {}),

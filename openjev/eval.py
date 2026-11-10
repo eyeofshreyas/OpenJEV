@@ -116,7 +116,8 @@ def _median_p95(values: torch.Tensor) -> tuple[float, float]:
 
 
 @torch.no_grad()
-def evaluate(model, tok, cases, batch_size: int = 16) -> dict:
+def evaluate(model, tok, cases, batch_size: int = 16, max_len: int = MAX_LEN,
+             head_max_len: int = HEAD_MAX_LEN) -> dict:
     """Run ``model`` over ``cases`` and report accuracy, calibration and latency.
 
     Applies the model's fitted ``temperature`` buffer — the whole point is to
@@ -153,7 +154,7 @@ def evaluate(model, tok, cases, batch_size: int = 16) -> dict:
     try:
         for i in range(0, len(items), batch_size):
             chunk = items[i : i + batch_size]
-            batch, target_matrix = _batch_items(tok, chunk, state_ids_cache)
+            batch, target_matrix = _batch_items(tok, chunk, state_ids_cache, max_len, head_max_len)
             batch = {k: v.to(device) for k, v in batch.items()}
 
             sync(device)  # a CUDA forward returns at kernel-launch time; time the work, not the launch

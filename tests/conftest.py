@@ -6,6 +6,7 @@ import pytest
 from transformers import AutoTokenizer
 
 import openjev
+import openjev.encode
 from openjev.data import Item, target_vector
 from openjev.model import build_model, probabilities, tiny_config
 from openjev.train import TrainConfig, _batch
@@ -37,6 +38,8 @@ def tiny_agent(tok, tiny_model):
     agent.tok = tok
     agent.model = tiny_model
     agent.device = torch.device("cpu")
+    agent.max_len = openjev.encode.MAX_LEN
+    agent.head_max_len = openjev.encode.HEAD_MAX_LEN
     return agent
 
 

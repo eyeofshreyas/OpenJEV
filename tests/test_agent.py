@@ -1,10 +1,12 @@
+import json
+
 import pytest
 import torch
 
 import openjev
 import openjev.encode
 from openjev import load
-from openjev.train import save_checkpoint
+from openjev.train import TrainConfig, save_checkpoint
 from tests.conftest import CHOICE, NOUL, SCORE
 
 
@@ -57,3 +59,19 @@ def test_temperature_from_the_checkpoint_is_applied(tmp_path, tiny_model, tok):
     warm = load(tmp_path / "warm").predict("s", {"d": CHOICE})["answers"]["d"]
     assert warm["answer_confidence"] < cold["answer_confidence"]
     assert warm["choice"] == cold["choice"]
+
+
+def test_checkpoint_is_served_at_the_budget_it_was_trained_at(tiny_model, tok, tmp_path):
+    """A checkpoint trained at a non-default token budget must be served at it.
+
+    The spec contemplates ``head_max_len=512`` for MASSIVE's 60-label setting;
+    recording the module default and then serving at the module default would
+    publish a number measured at a budget the weights never saw.
+    """
+    save_checkpoint(tiny_model, tok, tmp_path, cfg=TrainConfig(max_len=300, head_max_len=64))
+    config = json.loads((tmp_path / "rl_agent_config.json").read_text())
+    assert (config["max_len"], config["head_max_len"]) == (300, 64)
+
+    usage = load(tmp_path).predict("word " * 500, {"d": CHOICE})["usage"]
+    assert usage["state_tokens"] >= 500  # the state itself is far longer than the budget
+    assert usage["state_tokens_used"] < 300, "served at the module default, not the checkpoint's budget"

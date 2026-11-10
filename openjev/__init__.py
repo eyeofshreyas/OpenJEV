@@ -52,11 +52,18 @@ class Agent:
 
     def __init__(self, path: str | None = None, backbone: str | None = None, device=None):
         self.device = torch.device(device) if device is not None else torch.device("cpu")
+        config = {}
         if path is not None:
-            model, tok, _config = load_checkpoint(path)
+            model, tok, config = load_checkpoint(path)
         else:
             tok = AutoTokenizer.from_pretrained(backbone or DEFAULT_BACKBONE)
             model = build_model(backbone=backbone)
+        # Served at the budget the checkpoint was trained at. A run that moved
+        # ``head_max_len`` (the spec does, for MASSIVE's 60 labels) and was then
+        # served at the module default would answer from a sequence shape the
+        # weights never saw.
+        self.max_len = config.get("max_len", encode.MAX_LEN)
+        self.head_max_len = config.get("head_max_len", encode.HEAD_MAX_LEN)
         self.model = model.to(self.device).eval()
         self.tok = tok
 
@@ -69,7 +76,8 @@ class Agent:
 
         qids = list(questions)
         encoded = [
-            encode.build_sequence(self.tok, state, questions[qid], qid=qid, state_ids=state_ids)
+            encode.build_sequence(self.tok, state, questions[qid], qid=qid, state_ids=state_ids,
+                                  max_len=self.max_len, head_max_len=self.head_max_len)
             for qid in qids
         ]
         batch = encode.collate(encoded, self.tok.pad_token_id)
