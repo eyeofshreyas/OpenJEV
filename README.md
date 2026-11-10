@@ -49,6 +49,10 @@ backbone (still untrained — no checkpoint has been published yet), or set
 `OPENJEV_CHECKPOINT=/path/to/checkpoint` once one exists to see the real
 comparison.
 
+Prefer a browser? `playground/` is a small FastAPI + React app for the same
+thing — edit a state and its questions, hit ask, see the bars. See
+`playground/README.md` for how to run it.
+
 `1_vanilla_decoding.py` shows the problem this project exists to fix: why a
 generated token's probability isn't a decision probability.
 
@@ -106,6 +110,7 @@ against these functions; see their docstrings in `openjev/train.py` and
 | `common.py` | The baseline: a prompted causal LM scored by a trie over its generation |
 | `docs/superpowers/specs/` | The binding design spec |
 | `docs/superpowers/plans/` | The implementation plan this was built from |
+| `playground/` | FastAPI + React playground for `Agent.predict` |
 
 ## Tests
 
