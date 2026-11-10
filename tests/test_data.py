@@ -20,7 +20,9 @@ def test_csv_builds_one_choice_question_from_the_label_column():
     items, question, skipped = items_from_csv("tests/fixtures/tickets.csv",
                                               text_column="body", label_column="department")
     assert question["type"] == "choice"
-    assert list(question["criteria"]) == ["billing", "technical"]
+    # The fixture's first-appearance order is deliberately not alphabetical, so
+    # a sorted() implementation fails this instead of passing it by accident.
+    assert list(question["criteria"]) == ["technical", "billing"]
     assert len(items) == 4 and skipped["empty_label"] == 1
 
 

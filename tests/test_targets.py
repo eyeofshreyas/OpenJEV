@@ -30,6 +30,12 @@ def test_fractional_level_splits_between_neighbours():
     assert v == pytest.approx([0.0, 0.5, 0.5])
 
 
+def test_fractional_level_is_not_smoothed_at_the_default_either():
+    # The existing test passes smoothing=0.0, which leaves the no-double-smoothing
+    # rule unexercised at the 0.1 training actually runs with.
+    assert target_vector(SCORE, expected=1.5) == pytest.approx([0.0, 0.5, 0.5])
+
+
 def test_integer_level_is_smoothed_like_a_label():
     assert target_vector(SCORE, expected=2) == pytest.approx([0.05, 0.05, 0.9])
 

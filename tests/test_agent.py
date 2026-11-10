@@ -6,6 +6,7 @@ import torch
 import openjev
 import openjev.encode
 from openjev import load
+from openjev.model import probabilities
 from openjev.train import TrainConfig, save_checkpoint
 from tests.conftest import CHOICE, NOUL, SCORE
 
@@ -28,6 +29,31 @@ def test_probabilities_are_keyed_by_label_and_sum_to_one(tiny_agent):
     p = tiny_agent.predict("s", {"d": CHOICE})["answers"]["d"]["probabilities"]
     assert set(p) == set(CHOICE["criteria"])
     assert sum(p.values()) == pytest.approx(1.0, abs=1e-5)
+
+
+def test_each_probability_sits_on_its_own_option(tiny_agent, tok):
+    """A label's probability must be the one read off that label's own marker.
+
+    Matching label sets and a sum of 1 would still pass if the ordering the
+    answer is keyed with drifted from the ordering the markers are laid out
+    in — publishing correct probabilities under the wrong names, which is the
+    worst failure this project has. So read it back the hard way: decode the
+    option behind each marker and compare slot by slot. The criteria here are
+    deliberately out of alphabetical order, so a sorted() reconstruction fails.
+    """
+    question = {"type": "choice", "instructions": "i", "criteria": {"c": "", "a": "", "b": ""}}
+    answer = tiny_agent.predict("s", {"d": question})["answers"]["d"]["probabilities"]
+
+    batch = openjev.encode.collate(
+        [openjev.encode.build_sequence(tok, "s", question, qid="d")], tok.pad_token_id
+    )
+    with torch.no_grad():
+        probs = probabilities(tiny_agent.model(**batch), batch["marker_mask"],
+                              qtype=batch["qtype"], temperature=tiny_agent.model.temperature)
+
+    for slot, position in enumerate(batch["marker_pos"][0]):
+        option = tok.decode(batch["input_ids"][0, position + 1]).strip()
+        assert answer[option] == pytest.approx(float(probs[0, slot]), abs=1e-6)
 
 
 def test_truncation_is_surfaced_in_usage(tiny_agent):

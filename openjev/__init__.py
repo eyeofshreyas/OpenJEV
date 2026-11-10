@@ -18,22 +18,15 @@ import torch
 from transformers import AutoTokenizer
 
 from openjev import encode
+# The same list, under the name the data side uses for it: option keys in the
+# order ``render_options`` lays the markers out in. A second copy here is a copy
+# that can drift, and a drift would publish correct probabilities under the
+# wrong labels — the worst failure this project has.
+from openjev.data import _gold_keys as _labels
 from openjev.model import DEFAULT_BACKBONE, build_model
 from openjev.model import probabilities as compute_probabilities
 from openjev.model import sync
 from openjev.train import load_checkpoint
-
-
-def _labels(q: dict) -> list[str]:
-    """Option labels in the same render order ``build_head`` lays out markers in."""
-    qtype = q["type"]
-    if qtype == "choice":
-        return list(q["criteria"].keys())
-    if qtype == "score":
-        return [str(i) for i in range(len(q["criteria"]))]
-    if qtype == "noul":
-        return ["false", "true"]
-    raise ValueError(f"unknown question type {qtype!r}")
 
 
 def _answer(qid: str, q: dict, labels: list[str], probs: list[float]) -> dict:
