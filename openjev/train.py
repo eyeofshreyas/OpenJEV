@@ -228,9 +228,17 @@ def accuracy(model, tok, items: list[Item], cfg: TrainConfig, device) -> float:
 
 
 def _type_nll(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, t) -> torch.Tensor:
-    """Mean negative log-likelihood of ``target`` under ``logits`` scaled by ``t``."""
+    """Mean negative log-likelihood of ``target`` under ``logits`` scaled by ``t``.
+
+    A batch mixing items with different real option counts (every ``choice``/
+    ``score`` batch, padded to its widest item -- see ``_forward_items``) has
+    ``log_softmax`` of ``-inf`` at padded slots. ``target`` is 0 there too, but
+    ``0 * -inf`` is ``nan``, not 0, so the padded slots' log-prob is zeroed
+    explicitly before multiplying rather than relied on to cancel out.
+    """
     scaled = (logits / t).masked_fill(~mask, float("-inf"))
-    return -(target * torch.log_softmax(scaled, dim=-1)).sum(-1).mean()
+    log_p = torch.log_softmax(scaled, dim=-1).masked_fill(~mask, 0.0)
+    return -(target * log_p).sum(-1).mean()
 
 
 def _fit_one_temperature(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> float:

@@ -1,8 +1,11 @@
+import math
+
 import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
 import openjev.train
+from openjev.data import Item, target_vector
 from openjev.encode import QTYPES
 from openjev.train import TrainConfig, fit_temperatures, load_checkpoint, save_checkpoint
 
@@ -27,6 +30,37 @@ def test_temperature_never_changes_accuracy(tiny_model, tok):
     before = _accuracy(model, items, tok, temperature=None)
     temps, _ = fit_temperatures(model, items, tok, TrainConfig())
     assert _accuracy(model, items, tok, temperature=temps) == before
+
+
+def test_temperature_fitting_handles_mixed_option_counts(tiny_model, tok):
+    """Real ``choice``/``score`` data mixes items with different option counts.
+
+    ``_forward_items`` pads every item in a chunk out to that chunk's widest
+    option count (see its docstring), so a batch like this one always has
+    some items whose real option count is narrower than the padded width —
+    exactly what every published checkpoint's calibration slice looked like.
+    A fitter that only ever saw same-width items (as every other fixture in
+    this file does) can't catch a masked slot breaking the NLL.
+    """
+    two_opt = {"type": "choice", "instructions": "i", "criteria": {"a": "", "b": ""}}
+    four_opt = {"type": "choice", "instructions": "i", "criteria": {"a": "", "b": "", "c": "", "d": ""}}
+    items = [
+        Item(
+            state=f"case {i}: filler text",
+            qid="q",
+            question=q,
+            target=target_vector(q, expected="a"),
+        )
+        for i, q in enumerate(two_opt if i % 2 == 0 else four_opt for i in range(40))
+    ]
+
+    temps, notes = fit_temperatures(tiny_model, items, tok, TrainConfig())
+
+    assert not math.isnan(notes["choice"]["nll_before"])
+    assert not math.isnan(notes["choice"]["nll_after"])
+    # A fitter that silently broke would land exactly on the search floor,
+    # same as every published checkpoint's choice/score temperature did.
+    assert temps[QTYPES["choice"]] != pytest.approx(openjev.train._TEMP_LO)
 
 
 def test_too_few_items_leaves_temperature_unfitted(tiny_model, tok):
