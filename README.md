@@ -1,26 +1,52 @@
 # OpenJEV
 
-A non-autoregressive decision model: typed questions about a state go in,
-calibrated probability distributions come out, one batched forward call, no
-text generated. Inspired by TypeSafe AI's Jev and built following the
-open-source reference implementation [laya](https://github.com/NandhaKishorM/laya)
-(sequence format, checkpoint layout, data format — credited in `NOTICE`).
+OpenJEV answers yes/no and multiple-choice questions about a piece of text,
+and tells you how confident it is — as real probabilities, not a guess
+dressed up to look like one.
 
-It ships next to a baseline that gets the same question the old way: prompt
-a frozen causal LM and score the generated tokens. `common.py` is that
-baseline; `openjev/` is the decision model.
+You give it a **state** (a short description of a situation) and one or more
+**typed questions** about that state. It gives back a probability for each
+possible answer. For example:
 
-## Why
+- State: *"Customer requests a refund to a different card than the one charged."*
+- Question: *"Does this show signs of card-testing fraud?"* (yes/no)
+- Answer: `{"true": 0.87, "false": 0.13}`
 
-A causal LM asked "is this a scam?" produces a token, not a probability
-distribution. Coercing one out of it (normalizing a few candidate tokens'
-logits) is usually *not* a calibrated belief — it only looks like one.
-`openjev` instead reads a bidirectional encoder's hidden states straight
-into a small scorer head, trained against a strictly proper scoring rule and
-calibrated with temperature scaling, so the numbers it reports are meant to
-be checked, not taken on faith. See
-`docs/superpowers/specs/2026-11-09-openjev-decision-model-design.md` for the
-full design, including the anti-goals this project is built not to violate.
+All questions about one state are answered together in a single pass through
+the model — no matter how many questions you ask.
+
+## Why this exists
+
+The usual way to get an AI model to answer a yes/no question is to prompt a
+chat-style language model and read off the one word it generates ("yes" or
+"no"). You can turn the model's internal scores for those words into
+something that *looks* like a probability, but it usually isn't one — it's
+rarely reflective of the model's actual confidence, just a number pulled
+from a process that wasn't built to produce one.
+
+OpenJEV does it differently: instead of generating text, it feeds the
+question directly into a *bidirectional encoder* (a type of model that reads
+the entire input at once, rather than one word at a time) and reads the
+answer straight out of its internal state through a small dedicated scoring
+head. That head is trained specifically to produce calibrated probabilities
+— using a *strictly proper scoring rule* (a training objective that only
+rewards the model for reporting its honest confidence, never for
+overstating or underselling it) and *temperature scaling* (a calibration
+step that corrects how over- or under-confident the raw output is). The
+result is a number meant to be checked against real outcomes, not taken on
+faith.
+
+This is inspired by TypeSafe AI's Jev, and follows the design of the
+open-source project [laya](https://github.com/NandhaKishorM/laya) (sequence
+format, checkpoint layout, data format — credited in `NOTICE`).
+
+The repo also ships a baseline that answers the same questions the old way
+— by prompting a frozen chat model and scoring the text it generates — so
+you can compare the two approaches directly. `common.py` is that baseline;
+`openjev/` is the calibrated decision model.
+
+For the full design, including what this project deliberately avoids doing,
+see `docs/superpowers/specs/2026-11-09-openjev-decision-model-design.md`.
 
 ## Install
 
@@ -30,10 +56,10 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Needs `torch>=2.2`, `transformers>=5.0`, `datasets`, `safetensors`, `pytest`
-(`numpy` is test-only). The default backbone is
-`answerdotai/ModernBERT-base`, downloaded from the Hub on first use unless
-you point `Agent` at a local checkpoint.
+This installs `torch`, `transformers`, `datasets`, `safetensors`, and
+`pytest`. The model defaults to `answerdotai/ModernBERT-base`, a small
+bidirectional encoder downloaded automatically the first time you run it
+(unless you point it at your own trained checkpoint instead).
 
 ## Try it
 
@@ -41,37 +67,44 @@ you point `Agent` at a local checkpoint.
 TINY=1 python 2_one_pass.py
 ```
 
-Runs a fraud-review case through both engines — the prompted baseline and
-`openjev.Agent` — with a randomly initialized tiny model so nothing
-downloads. The output explains, in place, what an untrained distribution
-does and doesn't tell you. Drop `TINY=1` to run the real `ModernBERT-base`
-backbone (still untrained — no checkpoint has been published yet), or set
-`OPENJEV_CHECKPOINT=/path/to/checkpoint` once one exists to see the real
-comparison.
+This runs one example case through both engines — the old prompt-and-decode
+baseline, and OpenJEV's `Agent` — using a tiny, randomly-initialized model so
+nothing needs to download. Because the model hasn't been trained, its
+answers will be meaningless, but the script explains that in its output, so
+you can see *what a trained model's answer would look like* without waiting
+on a download.
 
-Prefer a browser? `playground/` is a small FastAPI + React app for the same
-thing — edit a state and its questions, hit ask, see the bars. See
-`playground/README.md` for how to run it.
+- Drop `TINY=1` to use the real `ModernBERT-base` model (still untrained —
+  no trained checkpoint has been published yet).
+- Once a trained checkpoint exists, point at it with
+  `OPENJEV_CHECKPOINT=/path/to/checkpoint` to see real, meaningful answers.
 
-`1_vanilla_decoding.py` shows the problem this project exists to fix: why a
-generated token's probability isn't a decision probability.
+Prefer a visual interface? `playground/` is a small web app (FastAPI
+backend, React frontend) for the same thing — type in a state and its
+questions, click ask, and see the probabilities as bars. See
+`playground/README.md` to run it.
+
+`1_vanilla_decoding.py` demonstrates the problem this project exists to fix:
+why the probability of a generated word isn't the same thing as a decision
+probability.
 
 ## Use it
 
 ```python
 import openjev
 
-agent = openjev.load("/path/to/checkpoint")  # or openjev.Agent() for a fresh, untrained backbone
+# Point at a trained checkpoint, or call Agent() for an untrained one to explore the API
+agent = openjev.load("/path/to/checkpoint")
 
 state = "Customer requests a refund to a different card than the one charged."
 
 questions = {
     "is_fraud": {
-        "type": "noul",  # yes/no
+        "type": "noul",  # yes/no question
         "instructions": "Does this request show signs of card-testing fraud?",
     },
     "priority": {
-        "type": "choice",
+        "type": "choice",  # pick one labeled option
         "instructions": "How urgently should this be reviewed?",
         "criteria": {"low": "", "medium": "", "high": ""},
     },
@@ -79,40 +112,46 @@ questions = {
 
 result = agent.predict(state, questions)
 result["answers"]["is_fraud"]["probabilities"]   # {"true": 0.87, "false": 0.13}
-result["usage"]["forward_passes"]                # 1, however many questions were asked
+result["usage"]["forward_passes"]                # how many model passes this cost — 1, regardless of question count
 ```
 
-Question types: `choice` (pick one of N labeled options), `score` (ordered
-levels — partial credit for being one level off), `noul` (yes/no). One
-state, any number of questions, one forward call — `usage` reports the
-actual pass count and latency rather than asserting it.
+There are three question types:
+
+- **`noul`** — a yes/no question.
+- **`choice`** — pick one of several labeled options.
+- **`score`** — an ordered scale (e.g. low/medium/high), where being one
+  level off still counts as partially correct.
+
+You can ask any number of questions about one state, and it still costs a
+single forward pass. `result["usage"]` reports the real pass count and
+timing, rather than just claiming "one pass" without proof.
 
 ## Train and evaluate
 
-The pieces exist as library functions — `openjev.train.train`,
-`fit_temperatures`, `save_checkpoint`, and `openjev.eval.evaluate` — but
-there is **no CLI yet** to drive them end to end from a labelled file in one
-command. Until that follow-up task lands, training is scripted directly
-against these functions; see their docstrings in `openjev/train.py` and
-`openjev/eval.py` and the task plan below for the exact contracts.
+The building blocks for training exist as library functions —
+`openjev.train.train`, `fit_temperatures`, `save_checkpoint`, and
+`openjev.eval.evaluate` — but there's **no command-line tool yet** to run
+all of them end-to-end from a labeled data file. Until that exists, training
+is driven directly by calling these functions in a script. See their
+docstrings in `openjev/train.py` and `openjev/eval.py` for exact usage.
 
-## Layout
+## Project layout
 
 | Path | What it's for |
 |---|---|
-| `openjev/encode.py` | Typed-question validation, sequence/marker layout, collation, option-budget enforcement |
-| `openjev/model.py` | ModernBERT backbone + head + per-marker scorer + per-type temperature |
-| `openjev/score.py` | The strictly proper scoring rule training optimizes |
-| `openjev/data.py` | Target construction, JSONL/CSV readers, HF dataset loaders |
-| `openjev/train.py` | Train loop, resume, temperature calibration, checkpoint I/O |
-| `openjev/eval.py` | ECE, Brier, random baseline, latency |
-| `openjev/__init__.py` | `Agent` — the public `predict`/`load` interface |
-| `common.py` | The baseline: a prompted causal LM scored by a trie over its generation |
-| `docs/superpowers/specs/` | The binding design spec |
+| `openjev/encode.py` | Validates questions and lays out the input sequence the model reads |
+| `openjev/model.py` | The model itself: encoder + scoring head + per-question-type calibration |
+| `openjev/score.py` | The training objective that teaches the model to be calibrated |
+| `openjev/data.py` | Loads and formats training data (JSONL, CSV, or Hugging Face datasets) |
+| `openjev/train.py` | The training loop, checkpoint saving/loading, calibration fitting |
+| `openjev/eval.py` | Measures how calibrated and accurate the model actually is |
+| `openjev/__init__.py` | `Agent` — the main `predict`/`load` interface described above |
+| `common.py` | The baseline: a prompted chat model scored on its generated text |
+| `docs/superpowers/specs/` | The full design document |
 | `docs/superpowers/plans/` | The implementation plan this was built from |
-| `playground/` | FastAPI + React playground for `Agent.predict` |
+| `playground/` | The web app for trying `Agent.predict` interactively |
 
-## Tests
+## Running tests
 
 ```bash
 pytest -q -W error
