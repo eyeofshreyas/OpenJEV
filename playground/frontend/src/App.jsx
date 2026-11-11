@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 
 const TYPES = ["choice", "score", "noul"];
 
+// The field each answer type's value lives under, in both the API response
+// and the Python call -- drives the "result.answers.x.y" breadcrumb below.
+const VALUE_FIELD = { choice: "choice", score: "score", noul: "noul" };
+
 function blankQuestion() {
   return {
     id: crypto.randomUUID(),
@@ -47,28 +51,63 @@ function fromApiQuestions(questions) {
   });
 }
 
+// The Python one would actually write to get this exact result -- mirrors
+// the request, the way Jev's playground keeps its "send code" box in sync
+// with the request editor.
+function pythonCall(state, apiQuestions) {
+  const stateLiteral = JSON.stringify(state.length > 60 ? state.slice(0, 57) + "..." : state);
+  const questionsLiteral = JSON.stringify(apiQuestions, null, 4).replace(/\n/g, "\n");
+  return `import openjev
+
+agent = openjev.load("checkpoint")
+result = agent.predict(\n    ${stateLiteral},\n    ${questionsLiteral},\n)`;
+}
+
+function StepHeading({ step, title, hint }) {
+  return (
+    <h2>
+      <span className="step">{step}</span>
+      {title}
+      {hint && <small>{hint}</small>}
+    </h2>
+  );
+}
+
 function Bar({ label, prob, isTop }) {
   return (
-    <div className="bar-row">
+    <div className={"bar-row" + (isTop ? " top" : "")}>
       <span className="bar-label">{label}</span>
       <div className="bar-track">
-        <div className={"bar-fill" + (isTop ? " top" : "")} style={{ width: `${prob * 100}%` }} />
+        <div className="bar-fill" style={{ width: `${prob * 100}%` }} />
       </div>
       <span className="bar-pct">{(prob * 100).toFixed(1)}%</span>
     </div>
   );
 }
 
-function Panel({ step, title, children, footer }) {
+function AnswerCard({ qid, answer, type }) {
+  const probs = Object.entries(answer.probabilities).sort((a, b) => b[1] - a[1]);
+  const top = probs[0][0];
+  const field = VALUE_FIELD[type];
+  const value = field === "choice" ? answer.choice : answer[field].toFixed(2);
+
   return (
-    <section className="panel">
-      <div className="panel-bar">
-        <span className="panel-step">{step}</span>
-        <span className="panel-title">{title}</span>
+    <div className={"answer " + type}>
+      <div className="answer-head">
+        <span className="badge">{type}</span>
+        <span className="answer-id">{qid}</span>
+        <span className="answer-value">{value}</span>
       </div>
-      <div className="panel-body">{children}</div>
-      {footer}
-    </section>
+      <div className="answer-path">
+        result["answers"]["{qid}"]["{field}"]
+      </div>
+      {probs.map(([label, prob]) => (
+        <Bar key={label} label={label} prob={prob} isTop={label === top} />
+      ))}
+      <div className="confidence">
+        confidence <b>{answer.answer_confidence.toFixed(2)}</b>
+      </div>
+    </div>
   );
 }
 
@@ -77,6 +116,7 @@ export default function App() {
   const [questions, setQuestions] = useState([]);
   const [status, setStatus] = useState(null);
   const [result, setResult] = useState(null);
+  const [askedTypes, setAskedTypes] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -133,11 +173,18 @@ export default function App() {
     setLoading(true);
     setError(null);
     setResult(null);
+    const apiQuestions = toApiQuestions(questions);
+    // Snapshot qid -> type now: the result card needs it to pick a color and a
+    // path, and the live `questions` list can drift (edited, reordered) by the
+    // time the response lands.
+    const types = {};
+    for (const [qid, q] of Object.entries(apiQuestions)) types[qid] = q.type;
+    setAskedTypes(types);
     try {
       const res = await fetch("/api/predict", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state, questions: toApiQuestions(questions) }),
+        body: JSON.stringify({ state, questions: apiQuestions }),
       });
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
       setResult(await res.json());
@@ -161,21 +208,13 @@ export default function App() {
         {status && <div className={`caveat caveat-${status.mode}`}>{status.caveat}</div>}
       </header>
 
-      <div className="workspace">
-        <Panel step="1" title="state">
+      <main className="workspace">
+        <section className="pane">
+          <StepHeading step="1" title="state" hint="the text being evaluated" />
           <textarea value={state} onChange={(e) => setState(e.target.value)} rows={10} />
           <button className="link-button" onClick={loadExample}>load example case</button>
-        </Panel>
 
-        <Panel
-          step="2"
-          title="questions"
-          footer={
-            <button className="ask-button" onClick={ask} disabled={loading || !state.trim()}>
-              {loading ? "asking..." : "ask → see the decision"}
-            </button>
-          }
-        >
+          <StepHeading step="2" title="questions" hint="typed questions about the state" />
           <button className="add-question-button" onClick={addQuestion}>+ question</button>
           {questions.map((q) => (
             <div className="question-card" key={q.id}>
@@ -221,34 +260,33 @@ export default function App() {
               )}
             </div>
           ))}
-        </Panel>
+          <button className="run" onClick={ask} disabled={loading || !state.trim()}>
+            {loading ? "asking..." : "ask ⌘↵"}
+          </button>
+        </section>
 
-        <Panel step="3" title="decision">
+        <section className="pane">
+          <StepHeading step="3" title="decision" hint="one forward pass answers every question" />
           {error && <div className="error">{error}</div>}
-          {!error && !result && <div className="empty-hint">ask to see typed answers here</div>}
+          {!error && !result && <div className="placeholder">ask to see typed answers here</div>}
           {result && (
             <>
               <div className="usage">
-                {result.usage.forward_passes} forward pass &middot; {result.usage.questions} questions &middot;{" "}
-                {result.usage.ms.toFixed(0)}ms
+                <span>{result.usage.forward_passes} forward pass</span>
+                <span>{result.usage.questions} questions</span>
+                <span>{result.usage.ms.toFixed(0)}ms</span>
                 {result.usage.truncated && <span className="truncated-badge">state truncated</span>}
               </div>
-              {Object.entries(result.answers).map(([qid, answer]) => {
-                const probs = Object.entries(answer.probabilities).sort((a, b) => b[1] - a[1]);
-                const top = probs[0][0];
-                return (
-                  <div className="answer-card" key={qid}>
-                    <h3>{qid}</h3>
-                    {probs.map(([label, prob]) => (
-                      <Bar key={label} label={label} prob={prob} isTop={label === top} />
-                    ))}
-                  </div>
-                );
-              })}
+              {Object.entries(result.answers).map(([qid, answer]) => (
+                <AnswerCard key={qid} qid={qid} answer={answer} type={askedTypes[qid]} />
+              ))}
             </>
           )}
-        </Panel>
-      </div>
+
+          <StepHeading step="4" title="how it's called" hint="the equivalent openjev call" />
+          <pre className="code">{pythonCall(state, toApiQuestions(questions))}</pre>
+        </section>
+      </main>
     </div>
   );
 }
