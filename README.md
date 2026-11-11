@@ -74,10 +74,21 @@ answers will be meaningless, but the script explains that in its output, so
 you can see *what a trained model's answer would look like* without waiting
 on a download.
 
-- Drop `TINY=1` to use the real `ModernBERT-base` model (still untrained —
-  no trained checkpoint has been published yet).
-- Once a trained checkpoint exists, point at it with
-  `OPENJEV_CHECKPOINT=/path/to/checkpoint` to see real, meaningful answers.
+- Drop `TINY=1` to use the real `ModernBERT-base` model (still untrained on
+  its own).
+- A real trained checkpoint now exists: `checkpoints/seed2/published` (see
+  `docs/MODEL_CARD.md` for what it was trained on and how accurate it
+  actually is — 67.8% on held-out test cases, well above the 31.75% random
+  baseline, but still wrong often enough that this is a research checkpoint,
+  not a production one). Point at it with:
+
+  ```bash
+  OPENJEV_CHECKPOINT=checkpoints/seed2/published python 2_one_pass.py
+  ```
+
+  The checkpoint isn't in git (binary weights, ~650 MB per seed) — extract
+  it from `published_checkpoints.zip` into `checkpoints/` first, or point
+  `OPENJEV_CHECKPOINT` at your own trained checkpoint directory.
 
 Prefer a visual interface? `playground/` is a small web app (FastAPI
 backend, React frontend) for the same thing — type in a state and its
@@ -94,7 +105,7 @@ probability.
 import openjev
 
 # Point at a trained checkpoint, or call Agent() for an untrained one to explore the API
-agent = openjev.load("/path/to/checkpoint")
+agent = openjev.load("checkpoints/seed2/published")
 
 state = "Customer requests a refund to a different card than the one charged."
 
@@ -135,6 +146,11 @@ all of them end-to-end from a labeled data file. Until that exists, training
 is driven directly by calling these functions in a script. See their
 docstrings in `openjev/train.py` and `openjev/eval.py` for exact usage.
 
+`scripts/train_base.py` is the script that produced the checkpoints in
+`checkpoints/` — `answerdotai/ModernBERT-base` on the `typed-decisions`
+dataset, three seeds, auto-sized to whatever GPU it finds. Full numbers,
+caveats, and what it was and wasn't trained on: `docs/MODEL_CARD.md`.
+
 ## Project layout
 
 | Path | What it's for |
@@ -147,6 +163,9 @@ docstrings in `openjev/train.py` and `openjev/eval.py` for exact usage.
 | `openjev/eval.py` | Measures how calibrated and accurate the model actually is |
 | `openjev/__init__.py` | `Agent` — the main `predict`/`load` interface described above |
 | `common.py` | The baseline: a prompted chat model scored on its generated text |
+| `scripts/train_base.py` | The run that produced `checkpoints/` |
+| `checkpoints/` | Trained checkpoints (not in git — see `docs/MODEL_CARD.md`) |
+| `docs/MODEL_CARD.md` | What the published checkpoints were trained on, and how accurate they actually are |
 | `docs/superpowers/specs/` | The full design document |
 | `docs/superpowers/plans/` | The implementation plan this was built from |
 | `playground/` | The web app for trying `Agent.predict` interactively |

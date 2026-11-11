@@ -1,6 +1,9 @@
 # OpenJEV — Product Requirements Document
 
-Status: **in development, no trained checkpoint published yet.** This document
+Status: **in development.** A first base-size checkpoint (milestone 5,
+local run) is trained and published — see `docs/MODEL_CARD.md` for its
+real numbers and limits. The large-size Kaggle run and the broader
+training set (MASSIVE, BoolQ, AG News) are still ahead. This document
 describes what OpenJEV is for and what "done" looks like, not a finished
 product. See `docs/superpowers/specs/2026-11-09-openjev-decision-model-design.md`
 for the binding technical design and `docs/CONCEPTS.md` for the reasoning
@@ -95,21 +98,32 @@ rather than aspirationally.
 
 1. A trained checkpoint answers `choice`, `score`, and `noul` questions,
    each in one forward pass, with N questions about one state answered in
-   one batched call.
+   one batched call. **Met** — `checkpoints/seed{0,1,2}/published`.
 2. On a held-out test slice, it beats the random baseline by a wide margin
    and beats the prompted-LLM baseline (`common.py`) on the same task.
+   **Partially met:** all three seeds clear the 0.3175 random baseline by
+   a wide margin (0.610–0.678 test accuracy); head-to-head comparison
+   against the `common.py` baseline is demonstrated case-by-case in
+   `2_one_pass.py` but not yet measured in aggregate over a test set.
 3. Its probabilities are calibrated: ECE reported per question type, with
    the temperature fitted on a calibration slice disjoint from the test
-   slice that produces every published number.
+   slice that produces every published number. **Met, with a caveat** —
+   ECE 0.108–0.141 across seeds, a real improvement over uncalibrated
+   output but not yet low by production standards; see `docs/MODEL_CARD.md`
+   for a flagged anomaly in the `choice`/`score` calibration diagnostics.
 4. The whole pipeline trains for **zero dollars** — development runs on a
-   4 GB laptop GPU, the real run on Kaggle's free 2×T4.
+   4 GB laptop GPU, the real run on Kaggle's free 2×T4. **Met for the
+   base-size run** (trained locally on the 4 GB laptop GPU); the
+   large-size Kaggle run hasn't happened yet.
 
 Accuracy target, stated honestly rather than aspirationally: this project
 trains a fresh head on a raw backbone, which in laya's own numbers is their
 **0.646** row (a base-size specialist), not their 0.766 row (a fine-tune of
 an already decision-pretrained checkpoint). Clearing 0.646 is the bar;
 quoting 0.766 or Jev's 0.727 as the target would misrepresent what a raw
-start can be expected to reach.
+start can be expected to reach. **Current result: seed 2 reaches 0.678,
+clearing the target; seeds 0 and 1 (0.610, 0.641) sit at or just below it**
+— three seeds of one run on one dataset, not a settled claim.
 
 ## 6. What failure looks like
 
@@ -133,7 +147,8 @@ See the design spec for the full breakdown; at a high level:
 3. Loss correctness, verified with a positive control before anything else.
 4. Calibration and evaluation metrics, with the baseline made fair.
 5. A real trained checkpoint (base-size locally, then large-size on
-   Kaggle), multiple seeds, published numbers.
+   Kaggle), multiple seeds, published numbers. **Base-size step done** —
+   see `docs/MODEL_CARD.md`; large-size Kaggle run still ahead.
 6. The `Agent` API and the side-by-side demo script.
 7. The playground web app.
 

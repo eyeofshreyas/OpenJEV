@@ -5,3 +5,5 @@ __pycache__/
 .worktrees/
 .superpowers/
 runs/
+checkpoints/
+published_checkpoints.zip

@@ -240,6 +240,8 @@ format isn't a reason to diverge for its own sake: `model.safetensors`,
 | `openjev/eval.py` | Accuracy, ECE, Brier, latency, baselines |
 | `openjev/__init__.py` | `Agent` — the public `predict`/`load` interface |
 | `common.py` | Baseline: frozen causal LM + trie scorer over generated tokens |
+| `scripts/train_base.py` | The run that produced `checkpoints/` |
+| `checkpoints/` | Trained checkpoints (not in git — see `docs/MODEL_CARD.md`) |
 | `1_vanilla_decoding.py` | Standalone illustration of why naive decoding fails (not wired to either engine) |
 | `2_one_pass.py` | Runs one case through both engines side by side |
 | `playground/backend/` | FastAPI app exposing `Agent.predict` over HTTP |
@@ -259,5 +261,9 @@ format isn't a reason to diverge for its own sake: `model.safetensors`,
 | Gradient checkpointing | off (fallback if OOM) | on (encoder + head) |
 | Expected memory | ~2.8 GB | ~12 GB per rank |
 
-No production deployment environment exists yet — there is no published
-checkpoint to deploy. The playground is a local/dev-only demo.
+A base-size checkpoint exists (`checkpoints/`, three seeds — see
+`docs/MODEL_CARD.md`), produced by `scripts/train_base.py` on the
+development hardware row above. The large-size Kaggle run hasn't happened
+yet. No production deployment environment exists — the playground is a
+local/dev-only demo, and the checkpoint is a research artifact, not a
+served model.
