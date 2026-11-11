@@ -249,7 +249,13 @@ def _fit_one_temperature(logits: torch.Tensor, target: torch.Tensor, mask: torch
         loss.backward()
         return loss
 
-    optimizer.step(closure)
+    try:
+        optimizer.step(closure)
+    except IndexError:
+        # torch's strong_wolfe line search can raise on a flat enough loss landscape
+        # (an empty bracket list) -- the grid search already found a reasonable
+        # minimum, so keep it rather than losing calibration for that type.
+        return best_t
     return float(log_t.detach().exp().clamp(_TEMP_LO, _TEMP_HI))
 
 
