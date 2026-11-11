@@ -44,8 +44,10 @@ def pick_config(device, **overrides) -> TrainConfig:
     (64) as the spec's default, which a Kaggle T4 (16 GB) runs directly.
     """
     if device.type != "cuda" or torch.cuda.get_device_properties(device).total_memory / 1e9 < 8:
-        return TrainConfig(epochs=4, micro_batch=4, grad_accum=16, gradient_checkpointing=True, **overrides)
-    return TrainConfig(epochs=4, micro_batch=8, grad_accum=8, **overrides)
+        defaults = dict(epochs=4, micro_batch=4, grad_accum=16, gradient_checkpointing=True)
+    else:
+        defaults = dict(epochs=4, micro_batch=8, grad_accum=8)
+    return TrainConfig(**{**defaults, **overrides})
 
 
 def main():
