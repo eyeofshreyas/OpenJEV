@@ -38,20 +38,25 @@ Kaggle run the design spec also calls for.
 
 Random baseline on this question mix: **0.3175**.
 
-| Seed | Test accuracy | `choice` | `score` | `noul` |
-|---|---|---|---|---|
-| 0 | 0.610 | 0.575 | 0.546 | 0.730 |
-| 1 | 0.641 | 0.595 | 0.581 | 0.768 |
-| 2 | **0.678** | 0.625 | 0.660 | 0.755 |
+| Seed | Test accuracy | `choice` | `score` | `noul` | ECE | Brier |
+|---|---|---|---|---|---|---|
+| 0 | 0.610 | 0.575 | 0.546 | 0.730 | 0.073 | 0.125 |
+| 1 | 0.641 | 0.595 | 0.581 | 0.768 | 0.088 | 0.111 |
+| 2 | **0.678** | 0.625 | 0.660 | 0.755 | 0.111 | **0.102** |
 
 Accuracy is unaffected by the temperature-fitting bug below (temperature
 scaling can only reshape probabilities, never change which option is
 largest, so the argmax — and therefore accuracy — is identical before and
-after the fix). **ECE and Brier are not** — they depend on the actual
-probability values, which the bug corrupted for `choice`/`score`. The
-original published ECE/Brier numbers for those two types are retracted;
-see the next section for why, and this card will carry the recomputed
-numbers once the post-fix evaluation run finishes.
+after the fix): confirmed, all three seeds matched their pre-fix accuracy
+to four decimal places on rerun. **ECE and Brier are not** — they depend
+on the actual probability values, which the bug corrupted for
+`choice`/`score`. Recomputed post-fix: Brier improved substantially for
+every seed (was 0.245/0.229/0.219 under the broken temperature; the
+0.25-floor temperature was sharpening `choice`/`score` logits 4x, which is
+exactly the kind of overconfidence Brier punishes hardest). ECE improved
+for seeds 0 and 1 (0.141→0.073, 0.133→0.088) and came out about flat for
+seed 2 (0.108→0.111, within noise — its `noul` temperature was already
+near 1.0 pre-fix, so it had the least broken calibration to begin with).
 
 Seed 2 is the best on test accuracy and is the one referenced as the
 default in the README (`checkpoints/seed2/published`). All three are kept,
@@ -109,12 +114,13 @@ Fitted temperatures moved from the 0.25 floor to real values:
 temperatures are unchanged from the original run, as expected — it was
 never affected.
 
-With real temperatures now in place, expect ECE to land in a believable
-range (not yet measured here — see the retraction note above) rather than
-whatever a search floor happened to produce. **Treat these checkpoints'
-probabilities as directionally meaningful, not as precise enough to gate
-fully automated decisions on without a human-reviewed threshold**, pending
-the recomputed ECE/Brier numbers.
+With real temperatures in place, ECE now sits at 0.073–0.111 (down from
+0.108–0.141) and Brier at 0.102–0.125 (down from 0.219–0.245) — a real
+calibration improvement, not just a crash fix. It's still not low enough
+to call this a well-calibrated production model (that bar is usually ECE
+under 0.05). **Treat these checkpoints' probabilities as directionally
+meaningful, not as precise enough to gate fully automated decisions on
+without a human-reviewed threshold.**
 
 ## What this is not
 

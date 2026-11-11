@@ -108,9 +108,11 @@ rather than aspirationally.
 3. Its probabilities are calibrated: ECE reported per question type, with
    the temperature fitted on a calibration slice disjoint from the test
    slice that produces every published number. **Met, with a caveat** —
-   ECE 0.108–0.141 across seeds, a real improvement over uncalibrated
-   output but not yet low by production standards; see `docs/MODEL_CARD.md`
-   for a flagged anomaly in the `choice`/`score` calibration diagnostics.
+   ECE 0.073–0.111 across seeds, a real improvement over uncalibrated
+   output but not yet low by production standards. (An earlier version of
+   this run had a `choice`/`score` temperature-fitting bug — see
+   `docs/MODEL_CARD.md` — now fixed and the published checkpoints
+   refitted and re-evaluated.)
 4. The whole pipeline trains for **zero dollars** — development runs on a
    4 GB laptop GPU, the real run on Kaggle's free 2×T4. **Met for the
    base-size run** (trained locally on the 4 GB laptop GPU); the
